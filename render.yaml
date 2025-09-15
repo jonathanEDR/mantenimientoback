@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: registro-backend
+    env: docker
+    plan: free
+    disk: 1
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PORT
+        value: 5000
+      - key: MONGODB_URI
+        scope: PRIVATE
+      - key: CLERK_SECRET_KEY
+        scope: PRIVATE
+      - key: CLERK_ISSUER
+        value: https://well-marmot-74.clerk.accounts.dev
+      - key: CORS_ORIGIN
+        value: https://your-frontend-url.example
