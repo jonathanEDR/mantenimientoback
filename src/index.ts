@@ -16,7 +16,32 @@ const app = express();
 // Middlewares de seguridad y parsing
 app.use(helmet());
 app.use(compression());
-app.use(cors({ origin: process.env.CORS_ORIGIN || true }));
+
+// Configuración de CORS más robusta
+const corsOptions = {
+  origin: (origin: any, callback: any) => {
+    const corsOriginEnv = process.env.CORS_ORIGIN || 'http://localhost:5173';
+    const allowedOrigins = corsOriginEnv.split(',').map(o => o.trim().replace(/\/$/, '')); // Remover barras finales
+    
+    // Permitir requests sin origin (como desde Postman o apps móviles)
+    if (!origin) return callback(null, true);
+    
+    // Normalizar origin (remover barra final)
+    const normalizedOrigin = origin.replace(/\/$/, '');
+    
+    if (allowedOrigins.includes(normalizedOrigin) || process.env.NODE_ENV === 'development') {
+      callback(null, true);
+    } else {
+      console.warn(`CORS: Origin no permitido: ${origin}. Origins permitidos: ${allowedOrigins.join(', ')}`);
+      callback(new Error('No permitido por CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+};
+
+app.use(cors(corsOptions));
 // Capture raw body for debugging/parsing when necessary (keeps parsed JSON too)
 app.use(express.json({
   limit: '10kb',
@@ -38,6 +63,16 @@ app.use(limiter);
 
 // API routes
 app.use('/api', apiRouter);
+
+// Health check endpoint para Render
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'OK', 
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
 
 // Health / root
 app.get('/', (req, res) => res.send('Servidor backend activo'));
