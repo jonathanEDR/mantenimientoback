@@ -1,12 +1,13 @@
 import express from 'express';
 import OrdenTrabajo, { TipoMantenimiento, PrioridadOrden, EstadoOrden } from '../models/OrdenTrabajo';
 import { requireAuth } from '../middleware/clerkAuth';
+import { requirePermission } from '../middleware/roleAuth';
 import logger from '../utils/logger';
 
 const router = express.Router();
 
 // GET /api/mantenimiento/ordenes - Obtener todas las órdenes de trabajo
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requirePermission('VIEW_WORK_ORDERS'), async (req, res) => {
   try {
     const { estado, prioridad, tipo, aeronave, tecnico } = req.query;
     
@@ -45,7 +46,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // GET /api/mantenimiento/ordenes/stats - Estadísticas de órdenes de trabajo
-router.get('/stats', requireAuth, async (req, res) => {
+router.get('/stats', requireAuth, requirePermission('VIEW_WORK_ORDERS'), async (req, res) => {
   try {
     logger.info('Obteniendo estadísticas de órdenes de trabajo');
 
@@ -125,7 +126,7 @@ router.get('/stats', requireAuth, async (req, res) => {
 });
 
 // GET /api/mantenimiento/ordenes/vencimientos - Órdenes próximas a vencer
-router.get('/vencimientos', requireAuth, async (req, res) => {
+router.get('/vencimientos', requireAuth, requirePermission('VIEW_WORK_ORDERS'), async (req, res) => {
   try {
     const { dias = 7 } = req.query;
     const fechaLimite = new Date();
@@ -158,7 +159,7 @@ router.get('/vencimientos', requireAuth, async (req, res) => {
 });
 
 // GET /api/mantenimiento/ordenes/tecnico/:technicoId - Órdenes asignadas a un técnico
-router.get('/tecnico/:tecnicoId', requireAuth, async (req, res) => {
+router.get('/tecnico/:tecnicoId', requireAuth, requirePermission('VIEW_WORK_ORDERS'), async (req, res) => {
   try {
     const { tecnicoId } = req.params;
     const { incluirCompletadas = false } = req.query;
@@ -191,7 +192,7 @@ router.get('/tecnico/:tecnicoId', requireAuth, async (req, res) => {
 });
 
 // GET /api/mantenimiento/ordenes/:id - Obtener orden por ID
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', requireAuth, requirePermission('VIEW_WORK_ORDERS'), async (req, res) => {
   try {
     const { id } = req.params;
     logger.info(`Obteniendo orden de trabajo con ID: ${id}`);
@@ -226,7 +227,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 });
 
 // POST /api/mantenimiento/ordenes - Crear nueva orden de trabajo
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requirePermission('CREATE_WORK_ORDERS'), async (req, res) => {
   try {
     const ordenData = req.body;
     logger.info(`Creando nueva orden de trabajo para aeronave: ${ordenData.aeronave}`);
@@ -253,7 +254,7 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 // PUT /api/mantenimiento/ordenes/:id - Actualizar orden de trabajo
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, requirePermission('EDIT_WORK_ORDERS'), async (req, res) => {
   try {
     const { id } = req.params;
     const actualizaciones = req.body;
@@ -293,7 +294,7 @@ router.put('/:id', requireAuth, async (req, res) => {
 });
 
 // PUT /api/mantenimiento/ordenes/:id/estado - Cambiar estado de orden
-router.put('/:id/estado', requireAuth, async (req, res) => {
+router.put('/:id/estado', requireAuth, requirePermission('EDIT_WORK_ORDERS'), async (req, res) => {
   try {
     const { id } = req.params;
     const { nuevoEstado, observaciones } = req.body;
@@ -344,7 +345,7 @@ router.put('/:id/estado', requireAuth, async (req, res) => {
 });
 
 // POST /api/mantenimiento/ordenes/:id/trabajo - Agregar registro de trabajo
-router.post('/:id/trabajo', requireAuth, async (req, res) => {
+router.post('/:id/trabajo', requireAuth, requirePermission('EDIT_WORK_ORDERS'), async (req, res) => {
   try {
     const { id } = req.params;
     const { tecnico, horasInvertidas, descripcionTrabajo, observaciones } = req.body;
@@ -388,7 +389,7 @@ router.post('/:id/trabajo', requireAuth, async (req, res) => {
 });
 
 // DELETE /api/mantenimiento/ordenes/:id - Eliminar orden de trabajo
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requirePermission('DELETE_WORK_ORDERS'), async (req, res) => {
   try {
     const { id } = req.params;
     logger.info(`Eliminando orden de trabajo con ID: ${id}`);

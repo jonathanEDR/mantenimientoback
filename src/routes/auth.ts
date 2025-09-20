@@ -1,7 +1,7 @@
 import express from 'express';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/clerkAuth';
-import User from '../models/User';
+import User, { UserRole } from '../models/User';
 
 const router = express.Router();
 
@@ -9,6 +9,7 @@ const registerSchema = z.object({
   name: z.string().min(1),
   email: z.string().email(),
   clerkId: z.string().min(1), // Clerk ID es requerido
+  role: z.enum([UserRole.ADMINISTRADOR, UserRole.MECANICO, UserRole.COPILOTO, UserRole.ESPECIALISTA]).optional()
 });
 
 // Endpoint para registro inicial (después de Clerk signup)
@@ -30,7 +31,7 @@ router.post('/register', async (req, res) => {
       }
     }
 
-    const { name, email, clerkId } = registerSchema.parse(parsedBody);
+    const { name, email, clerkId, role } = registerSchema.parse(parsedBody);
 
     // Verificar si el usuario ya existe
   const existingUser = await User.findOne({ clerkId });
@@ -47,6 +48,7 @@ router.post('/register', async (req, res) => {
       clerkId,
       name,
       email,
+      role: role || UserRole.ESPECIALISTA // Rol por defecto si no se especifica
     });
 
   await user.save();
@@ -106,7 +108,7 @@ router.post('/webhook', express.json(), async (req, res) => {
         return res.status(200).json({ message: 'already_exists' });
       }
 
-      const user = new User({ clerkId, name: name || 'Usuario', email });
+      const user = new User({ clerkId, name: name || 'Usuario', email, role: UserRole.ESPECIALISTA });
       await user.save();
       console.log('[auth:webhook] User created via webhook:', user._id.toString());
       return res.status(201).json({ message: 'created', user });

@@ -4,18 +4,19 @@ import OrdenTrabajo, { EstadoOrden, PrioridadOrden } from '../models/OrdenTrabaj
 import Inspeccion, { EstadoInspeccion, TipoInspeccion } from '../models/Inspeccion';
 import Aeronave from '../models/Aeronave';
 import { requireAuth } from '../middleware/clerkAuth';
+import { requirePermission } from '../middleware/roleAuth';
 import logger from '../utils/logger';
 
 const router = express.Router();
 
 // GET /api/mantenimiento/dashboard - Redirección a resumen
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requirePermission('VIEW_DASHBOARD'), async (req, res) => {
   // Redirigir a la ruta de resumen
   return res.redirect('/api/mantenimiento/dashboard/resumen');
 });
 
 // GET /api/mantenimiento/dashboard/resumen - Resumen general del dashboard
-router.get('/resumen', requireAuth, async (req, res) => {
+router.get('/resumen', requireAuth, requirePermission('VIEW_DASHBOARD'), async (req, res) => {
   try {
     logger.info('Obteniendo resumen del dashboard de mantenimiento');
 

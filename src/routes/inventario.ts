@@ -1,12 +1,13 @@
 import express from 'express';
 import Aeronave from '../models/Aeronave';
 import { requireAuth } from '../middleware/clerkAuth';
+import { requirePermission } from '../middleware/roleAuth';
 import logger from '../utils/logger';
 
 const router = express.Router();
 
 // GET /api/inventario - Obtener todas las aeronaves
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requirePermission('VIEW_INVENTORY'), async (req, res) => {
   try {
     logger.info('Obteniendo lista de todas las aeronaves');
 
@@ -31,7 +32,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // GET /api/inventario/stats - Obtener estadísticas de inventario
-router.get('/stats', requireAuth, async (req, res) => {
+router.get('/stats', requireAuth, requirePermission('VIEW_INVENTORY'), async (req, res) => {
   try {
     logger.info('Obteniendo estadísticas de inventario');
 

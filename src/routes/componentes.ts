@@ -1,12 +1,13 @@
 import express from 'express';
 import Componente, { ComponenteCategoria, EstadoComponente } from '../models/Componente';
 import { requireAuth } from '../middleware/clerkAuth';
+import { requirePermission } from '../middleware/roleAuth';
 import logger from '../utils/logger';
 
 const router = express.Router();
 
 // GET /api/mantenimiento/componentes - Obtener todos los componentes
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req, res) => {
   try {
     const { categoria, estado, aeronave, alertas } = req.query;
     
@@ -42,7 +43,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // GET /api/mantenimiento/componentes/stats - Estadísticas de componentes
-router.get('/stats', requireAuth, async (req, res) => {
+router.get('/stats', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req, res) => {
   try {
     logger.info('Obteniendo estadísticas de componentes');
 
@@ -98,7 +99,7 @@ router.get('/stats', requireAuth, async (req, res) => {
 });
 
 // GET /api/mantenimiento/componentes/alertas - Componentes con alertas
-router.get('/alertas', requireAuth, async (req, res) => {
+router.get('/alertas', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req, res) => {
   try {
     logger.info('Obteniendo componentes con alertas');
 
@@ -123,7 +124,7 @@ router.get('/alertas', requireAuth, async (req, res) => {
 });
 
 // GET /api/mantenimiento/componentes/aeronave/:matricula - Componentes de una aeronave
-router.get('/aeronave/:matricula', requireAuth, async (req, res) => {
+router.get('/aeronave/:matricula', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req, res) => {
   try {
     const { matricula } = req.params;
     logger.info(`Obteniendo componentes de la aeronave: ${matricula}`);
@@ -148,7 +149,7 @@ router.get('/aeronave/:matricula', requireAuth, async (req, res) => {
 });
 
 // GET /api/mantenimiento/componentes/:id - Obtener componente por ID
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req, res) => {
   try {
     const { id } = req.params;
     logger.info(`Obteniendo componente con ID: ${id}`);
@@ -180,7 +181,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 });
 
 // POST /api/mantenimiento/componentes - Crear nuevo componente
-router.post('/', requireAuth, async (req, res) => {
+router.post('/', requireAuth, requirePermission('CREATE_COMPONENTS'), async (req, res) => {
   try {
     const componenteData = req.body;
     logger.info(`Creando nuevo componente: ${componenteData.numeroSerie}`);
@@ -219,7 +220,7 @@ router.post('/', requireAuth, async (req, res) => {
 });
 
 // PUT /api/mantenimiento/componentes/:id - Actualizar componente
-router.put('/:id', requireAuth, async (req, res) => {
+router.put('/:id', requireAuth, requirePermission('EDIT_COMPONENTS'), async (req, res) => {
   try {
     const { id } = req.params;
     const actualizaciones = req.body;
@@ -258,7 +259,7 @@ router.put('/:id', requireAuth, async (req, res) => {
 });
 
 // PUT /api/mantenimiento/componentes/:id/instalar - Instalar componente en aeronave
-router.put('/:id/instalar', requireAuth, async (req, res) => {
+router.put('/:id/instalar', requireAuth, requirePermission('EDIT_COMPONENTS'), async (req, res) => {
   try {
     const { id } = req.params;
     const { aeronaveMatricula, posicionInstalacion, horasInstalacion } = req.body;
@@ -308,7 +309,7 @@ router.put('/:id/instalar', requireAuth, async (req, res) => {
 });
 
 // PUT /api/mantenimiento/componentes/:id/remover - Remover componente de aeronave
-router.put('/:id/remover', requireAuth, async (req, res) => {
+router.put('/:id/remover', requireAuth, requirePermission('EDIT_COMPONENTS'), async (req, res) => {
   try {
     const { id } = req.params;
     const { motivoRemocion, horasRemocion, observaciones } = req.body;
@@ -359,7 +360,7 @@ router.put('/:id/remover', requireAuth, async (req, res) => {
 });
 
 // DELETE /api/mantenimiento/componentes/:id - Eliminar componente
-router.delete('/:id', requireAuth, async (req, res) => {
+router.delete('/:id', requireAuth, requirePermission('DELETE_COMPONENTS'), async (req, res) => {
   try {
     const { id } = req.params;
     logger.info(`Eliminando componente con ID: ${id}`);
