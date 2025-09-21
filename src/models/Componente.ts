@@ -1,4 +1,4 @@
-import { Schema, model } from 'mongoose';
+import { Schema, model, Types } from 'mongoose';
 
 // Enums para los diferentes tipos y estados
 export enum ComponenteCategoria {
@@ -24,6 +24,7 @@ export enum ComponenteCategoria {
 export enum EstadoComponente {
   INSTALADO = 'INSTALADO',
   EN_ALMACEN = 'EN_ALMACEN',
+  EN_MANTENIMIENTO = 'EN_MANTENIMIENTO',
   EN_REPARACION = 'EN_REPARACION',
   CONDENADO = 'CONDENADO',
   EN_OVERHAUL = 'EN_OVERHAUL',
@@ -72,7 +73,7 @@ export interface IComponente {
   fabricante: string;
   fechaFabricacion: Date;
   fechaInstalacion?: Date;
-  aeronaveActual?: string; // Matrícula de aeronave donde está instalado
+  aeronaveActual?: Types.ObjectId; // Referencia a aeronave donde está instalado
   posicionInstalacion?: string; // Ej: "Main Rotor Hub", "Engine #1"
   estado: EstadoComponente;
   vidaUtil: typeof vidaUtilSchema.obj[];
@@ -121,7 +122,7 @@ const componenteSchema = new Schema<IComponente>({
   fechaFabricacion: { type: Date, required: true },
   fechaInstalacion: { type: Date },
   aeronaveActual: { 
-    type: String, 
+    type: Schema.Types.ObjectId, 
     ref: 'Aeronave',
     index: true
   },

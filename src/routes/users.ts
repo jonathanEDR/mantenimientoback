@@ -164,6 +164,10 @@ router.get('/me/permissions', requireAuth, async (req, res) => {
       canEditInventory: hasPermission(user.role, 'EDIT_INVENTORY'),
       canDeleteInventory: hasPermission(user.role, 'DELETE_INVENTORY'),
       canViewInventory: hasPermission(user.role, 'VIEW_INVENTORY'),
+      canCreateCatalogs: hasPermission(user.role, 'CREATE_CATALOGS'),
+      canEditCatalogs: hasPermission(user.role, 'EDIT_CATALOGS'),
+      canDeleteCatalogs: hasPermission(user.role, 'DELETE_CATALOGS'),
+      canViewCatalogs: hasPermission(user.role, 'VIEW_CATALOGS'),
       canViewDashboard: hasPermission(user.role, 'VIEW_DASHBOARD'),
       canViewAdvancedReports: hasPermission(user.role, 'VIEW_ADVANCED_REPORTS'),
       canAccessSystemConfig: hasPermission(user.role, 'SYSTEM_CONFIG')

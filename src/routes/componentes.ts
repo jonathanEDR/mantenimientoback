@@ -123,7 +123,7 @@ router.get('/alertas', requireAuth, requirePermission('VIEW_COMPONENTS'), async 
   }
 });
 
-// GET /api/mantenimiento/componentes/aeronave/:matricula - Componentes de una aeronave
+// GET /api/mantenimiento/componentes/aeronave/:matricula - Componentes de una aeronave por matrícula
 router.get('/aeronave/:matricula', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req, res) => {
   try {
     const { matricula } = req.params;
@@ -139,7 +139,33 @@ router.get('/aeronave/:matricula', requireAuth, requirePermission('VIEW_COMPONEN
     });
 
   } catch (error) {
-    logger.error('Error al obtener componentes de aeronave:', error);
+    logger.error(`Error al obtener componentes de aeronave ${req.params.matricula}:`, error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : {}
+    });
+  }
+});
+
+// GET /api/mantenimiento/componentes/aeronave/id/:aeronaveId - Componentes de una aeronave por ID
+router.get('/aeronave/id/:aeronaveId', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req, res) => {
+  try {
+    const { aeronaveId } = req.params;
+    logger.info(`Obteniendo componentes de la aeronave ID: ${aeronaveId}`);
+
+    const componentes = await Componente.find({ aeronaveActual: aeronaveId })
+      .populate('aeronaveActual', 'matricula modelo tipo')
+      .sort({ categoria: 1, nombre: 1 });
+
+    res.json({
+      success: true,
+      data: componentes,
+      total: componentes.length
+    });
+
+  } catch (error) {
+    logger.error(`Error al obtener componentes de aeronave ID ${req.params.aeronaveId}:`, error);
     res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
@@ -355,6 +381,92 @@ router.put('/:id/remover', requireAuth, requirePermission('EDIT_COMPONENTS'), as
       success: false,
       message: 'Error interno del servidor',
       error: process.env.NODE_ENV === 'development' ? error : {}
+    });
+  }
+});
+
+// PUT /api/mantenimiento/componentes/:id/historial - Actualizar componente desde módulo de historial
+router.put('/:id/historial', requireAuth, requirePermission('EDIT_COMPONENTS'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    const actualizaciones = req.body;
+    
+    logger.info(`Actualizando componente desde historial con ID: ${id}`, { actualizaciones });
+
+    // Validar que el componente existe
+    const componenteExistente = await Componente.findById(id);
+    if (!componenteExistente) {
+      return res.status(404).json({
+        success: false,
+        message: 'Componente no encontrado'
+      });
+    }
+
+    // Preparar las actualizaciones
+    const updateData: any = {
+      ...actualizaciones,
+      updatedAt: new Date()
+    };
+
+    // Si se está actualizando vidaUtil, agregar al historial de uso
+    if (actualizaciones.vidaUtil) {
+      const nuevoHistorial = {
+        fechaInstalacion: new Date(),
+        fechaRemocion: null,
+        aeronaveId: componenteExistente.aeronaveActual,
+        posicion: componenteExistente.posicionInstalacion || 'No especificada',
+        horasOperacion: actualizaciones.vidaUtil[0]?.acumulado || 0,
+        observaciones: actualizaciones.observaciones || ''
+      };
+
+      // Agregar al historial existente
+      const historialActualizado = [...(componenteExistente.historialUso || []), nuevoHistorial];
+      updateData.historialUso = historialActualizado;
+    }
+
+    // Actualizar componente directamente en la base de datos
+    const componenteActualizado = await Componente.findByIdAndUpdate(
+      id,
+      updateData,
+      { 
+        new: true, 
+        runValidators: true,
+        useFindAndModify: false 
+      }
+    ).populate('aeronaveActual', 'matricula modelo');
+
+    if (!componenteActualizado) {
+      return res.status(404).json({
+        success: false,
+        message: 'Componente no encontrado después de la actualización'
+      });
+    }
+
+    logger.info(`Componente actualizado desde historial: ${componenteActualizado.numeroSerie}`);
+
+    res.json({
+      success: true,
+      message: 'Componente actualizado exitosamente desde historial',
+      data: componenteActualizado
+    });
+
+  } catch (error: any) {
+    logger.error('Error al actualizar componente desde historial:', error);
+    
+    // Manejar errores de validación específicos
+    if (error.name === 'ValidationError') {
+      const errores = Object.values(error.errors).map((err: any) => err.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Error de validación',
+        errors: errores
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Error interno'
     });
   }
 });
