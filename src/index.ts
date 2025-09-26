@@ -57,8 +57,20 @@ app.use(express.json({
 // Logging de requests
 app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 
-// Rate limiter básico
-const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 100 });
+// Rate limiter configurado según el entorno
+const isDevelopment = process.env.NODE_ENV !== 'production';
+const limiter = rateLimit({
+  windowMs: isDevelopment ? 1 * 60 * 1000 : 15 * 60 * 1000, // 1 min en dev, 15 min en prod
+  max: isDevelopment ? 1000 : 100, // 1000 requests en dev, 100 en prod
+  message: {
+    error: 'Too many requests from this IP',
+    retryAfter: isDevelopment ? '1 minute' : '15 minutes'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+  // Excluir health check del rate limiting
+  skip: (req) => req.path === '/api/health' || req.path === '/'
+});
 app.use(limiter);
 
 // API routes

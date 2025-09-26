@@ -60,6 +60,10 @@ export const PERMISSIONS = {
   VIEW_DASHBOARD: [UserRole.ADMINISTRADOR, UserRole.MECANICO, UserRole.ESPECIALISTA, UserRole.COPILOTO],
   VIEW_ADVANCED_REPORTS: [UserRole.ADMINISTRADOR, UserRole.MECANICO, UserRole.ESPECIALISTA],
   
+  // Monitoreo de flota
+  VIEW_MONITORING: [UserRole.ADMINISTRADOR, UserRole.MECANICO, UserRole.ESPECIALISTA, UserRole.COPILOTO],
+  MANAGE_MONITORING: [UserRole.ADMINISTRADOR, UserRole.MECANICO],
+  
   // Configuración del sistema
   SYSTEM_CONFIG: [UserRole.ADMINISTRADOR]
 } as Record<string, UserRole[]>;
