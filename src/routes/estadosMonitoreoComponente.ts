@@ -1,0 +1,412 @@
+import { Router, Request, Response } from 'express';
+import { Types } from 'mongoose';
+import { EstadoMonitoreoComponente, IEstadoMonitoreoComponente } from '../models/EstadoMonitoreoComponente';
+import { CatalogoControlMonitoreo } from '../models/CatalogoControlMonitoreo';
+import Componente from '../models/Componente';
+import { MonitoreoGranularService } from '../services/MonitoreoGranularService';
+import logger from '../utils/logger';
+
+const router = Router();
+
+// Obtener todos los estados de monitoreo de un componente
+router.get('/componente/:componenteId', async (req: Request, res: Response) => {
+  try {
+    const { componenteId } = req.params;
+
+    if (!Types.ObjectId.isValid(componenteId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de componente inválido'
+      });
+    }
+
+    const estados = await EstadoMonitoreoComponente
+      .find({ componenteId })
+      .populate('catalogoControlId', 'descripcionCodigo horaInicial horaFinal')
+      .populate('componenteId', 'numeroSerie nombre categoria')
+      .sort({ fechaProximaRevision: 1 });
+
+    res.json({
+      success: true,
+      data: estados
+    });
+
+  } catch (error) {
+    logger.error('Error al obtener estados de monitoreo:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Crear nuevo estado de monitoreo para un componente
+router.post('/componente/:componenteId', async (req: Request, res: Response) => {
+  try {
+    const { componenteId } = req.params;
+    const {
+      catalogoControlId,
+      valorActual,
+      valorLimite,
+      unidad,
+      fechaProximaRevision,
+      observaciones,
+      configuracionPersonalizada
+    } = req.body;
+
+    if (!Types.ObjectId.isValid(componenteId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de componente inválido'
+      });
+    }
+
+    if (!Types.ObjectId.isValid(catalogoControlId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de catálogo de control inválido'
+      });
+    }
+
+    // Verificar que el componente existe
+    const componente = await Componente.findById(componenteId);
+    if (!componente) {
+      return res.status(404).json({
+        success: false,
+        message: 'Componente no encontrado'
+      });
+    }
+
+    // Verificar que el catálogo de control existe
+    const catalogoControl = await CatalogoControlMonitoreo.findById(catalogoControlId);
+    if (!catalogoControl) {
+      return res.status(404).json({
+        success: false,
+        message: 'Catálogo de control no encontrado'
+      });
+    }
+
+    // Verificar que no existe ya un estado para este componente y control
+    const estadoExistente = await EstadoMonitoreoComponente.findOne({
+      componenteId,
+      catalogoControlId
+    });
+
+    if (estadoExistente) {
+      return res.status(400).json({
+        success: false,
+        message: 'Ya existe un estado de monitoreo para este componente y control'
+      });
+    }
+
+    // Crear el nuevo estado
+    const nuevoEstado = new EstadoMonitoreoComponente({
+      componenteId,
+      catalogoControlId,
+      valorActual: valorActual || 0,
+      valorLimite,
+      unidad: unidad || 'HORAS',
+      fechaProximaRevision: fechaProximaRevision || new Date(),
+      observaciones,
+      configuracionPersonalizada
+    });
+
+    await nuevoEstado.save();
+
+    // Popular los datos para la respuesta
+    await nuevoEstado.populate([
+      { path: 'catalogoControlId', select: 'descripcionCodigo horaInicial horaFinal' },
+      { path: 'componenteId', select: 'numeroSerie nombre categoria' }
+    ]);
+
+    logger.info(`Estado de monitoreo creado para componente ${componenteId}`);
+
+    res.status(201).json({
+      success: true,
+      data: nuevoEstado,
+      message: 'Estado de monitoreo creado exitosamente'
+    });
+
+  } catch (error) {
+    logger.error('Error al crear estado de monitoreo:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Actualizar estado de monitoreo
+router.put('/:estadoId', async (req: Request, res: Response) => {
+  try {
+    const { estadoId } = req.params;
+    const {
+      valorActual,
+      valorLimite,
+      unidad,
+      fechaProximaRevision,
+      observaciones,
+      configuracionPersonalizada
+    } = req.body;
+
+    if (!Types.ObjectId.isValid(estadoId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de estado inválido'
+      });
+    }
+
+    const estado = await EstadoMonitoreoComponente.findById(estadoId);
+    if (!estado) {
+      return res.status(404).json({
+        success: false,
+        message: 'Estado de monitoreo no encontrado'
+      });
+    }
+
+    // Actualizar campos
+    if (valorActual !== undefined) estado.valorActual = valorActual;
+    if (valorLimite !== undefined) estado.valorLimite = valorLimite;
+    if (unidad !== undefined) estado.unidad = unidad;
+    if (fechaProximaRevision !== undefined) estado.fechaProximaRevision = fechaProximaRevision;
+    if (observaciones !== undefined) estado.observaciones = observaciones;
+    if (configuracionPersonalizada !== undefined) {
+      estado.configuracionPersonalizada = {
+        ...estado.configuracionPersonalizada,
+        ...configuracionPersonalizada
+      };
+    }
+
+    await estado.save();
+
+    // Popular los datos para la respuesta
+    await estado.populate([
+      { path: 'catalogoControlId', select: 'descripcionCodigo horaInicial horaFinal' },
+      { path: 'componenteId', select: 'numeroSerie nombre categoria' }
+    ]);
+
+    logger.info(`Estado de monitoreo ${estadoId} actualizado`);
+
+    res.json({
+      success: true,
+      data: estado,
+      message: 'Estado de monitoreo actualizado exitosamente'
+    });
+
+  } catch (error) {
+    logger.error('Error al actualizar estado de monitoreo:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Eliminar estado de monitoreo
+router.delete('/:estadoId', async (req: Request, res: Response) => {
+  try {
+    const { estadoId } = req.params;
+
+    if (!Types.ObjectId.isValid(estadoId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de estado inválido'
+      });
+    }
+
+    const estado = await EstadoMonitoreoComponente.findByIdAndDelete(estadoId);
+    if (!estado) {
+      return res.status(404).json({
+        success: false,
+        message: 'Estado de monitoreo no encontrado'
+      });
+    }
+
+    logger.info(`Estado de monitoreo ${estadoId} eliminado`);
+
+    res.json({
+      success: true,
+      message: 'Estado de monitoreo eliminado exitosamente'
+    });
+
+  } catch (error) {
+    logger.error('Error al eliminar estado de monitoreo:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Obtener resumen de estados por aeronave
+router.get('/aeronave/:aeronaveId/resumen', async (req: Request, res: Response) => {
+  try {
+    const { aeronaveId } = req.params;
+
+    if (!Types.ObjectId.isValid(aeronaveId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de aeronave inválido'
+      });
+    }
+
+    // Obtener componentes de la aeronave
+    const componentes = await Componente.find({ aeronaveActual: aeronaveId });
+    const componenteIds = componentes.map(c => c._id);
+
+    if (componenteIds.length === 0) {
+      return res.json({
+        success: true,
+        data: {
+          totalEstados: 0,
+          estadosOK: 0,
+          estadosProximos: 0,
+          estadosVencidos: 0,
+          estadosPorComponente: []
+        }
+      });
+    }
+
+    // Obtener todos los estados de monitoreo de los componentes
+    const estados = await EstadoMonitoreoComponente
+      .find({ componenteId: { $in: componenteIds } })
+      .populate('catalogoControlId', 'descripcionCodigo')
+      .populate('componenteId', 'numeroSerie nombre categoria');
+
+    // Calcular estadísticas
+    const totalEstados = estados.length;
+    const estadosOK = estados.filter(e => e.estado === 'OK').length;
+    const estadosProximos = estados.filter(e => e.estado === 'PROXIMO').length;
+    const estadosVencidos = estados.filter(e => e.estado === 'VENCIDO').length;
+
+    // Agrupar por componente
+    const estadosPorComponente = componentes.map(componente => {
+      const estadosComponente = estados.filter(e => 
+        e.componenteId._id.toString() === componente._id.toString()
+      );
+
+      return {
+        componente: {
+          id: componente._id,
+          numeroSerie: componente.numeroSerie,
+          nombre: componente.nombre,
+          categoria: componente.categoria
+        },
+        estados: estadosComponente,
+        resumen: {
+          total: estadosComponente.length,
+          ok: estadosComponente.filter(e => e.estado === 'OK').length,
+          proximos: estadosComponente.filter(e => e.estado === 'PROXIMO').length,
+          vencidos: estadosComponente.filter(e => e.estado === 'VENCIDO').length
+        }
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        totalEstados,
+        estadosOK,
+        estadosProximos,
+        estadosVencidos,
+        estadosPorComponente
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error al obtener resumen de estados por aeronave:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// =============================
+// ENDPOINTS DE MONITOREO GRANULAR
+// =============================
+
+// Obtener estado de monitoreo granular de una aeronave específica
+router.get('/granular/aeronave/:aeronaveId', async (req: Request, res: Response) => {
+  try {
+    const { aeronaveId } = req.params;
+
+    if (!Types.ObjectId.isValid(aeronaveId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de aeronave inválido'
+      });
+    }
+
+    const estadoGranular = await MonitoreoGranularService.calcularEstadoAeronave(aeronaveId);
+
+    res.json({
+      success: true,
+      data: estadoGranular
+    });
+
+  } catch (error) {
+    logger.error('Error al calcular estado granular de aeronave:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Obtener resumen granular de toda la flota
+router.get('/granular/flota', async (req: Request, res: Response) => {
+  try {
+    const resumenFlota = await MonitoreoGranularService.calcularResumenFlotaGranular();
+
+    res.json({
+      success: true,
+      data: resumenFlota
+    });
+
+  } catch (error) {
+    logger.error('Error al calcular resumen granular de flota:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Obtener alertas críticas de una aeronave
+router.get('/granular/aeronave/:aeronaveId/criticas', async (req: Request, res: Response) => {
+  try {
+    const { aeronaveId } = req.params;
+
+    if (!Types.ObjectId.isValid(aeronaveId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de aeronave inválido'
+      });
+    }
+
+    const alertasCriticas = await MonitoreoGranularService.obtenerAlertasCriticasAeronave(aeronaveId);
+
+    res.json({
+      success: true,
+      data: alertasCriticas
+    });
+
+  } catch (error) {
+    logger.error('Error al obtener alertas críticas de aeronave:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+export default router;

@@ -198,4 +198,15 @@ componenteSchema.pre('save', function(next) {
   next();
 });
 
+// Virtual para obtener estados de monitoreo asociados
+componenteSchema.virtual('estadosMonitoreo', {
+  ref: 'EstadoMonitoreoComponente',
+  localField: '_id',
+  foreignField: 'componenteId'
+});
+
+// Asegurar que los virtuals se incluyan en JSON
+componenteSchema.set('toJSON', { virtuals: true });
+componenteSchema.set('toObject', { virtuals: true });
+
 export default model<IComponente>('Componente', componenteSchema);

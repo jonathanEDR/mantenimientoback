@@ -5,6 +5,7 @@ import logger from './logger';
 export interface PropagacionResult {
   success: boolean;
   componentesActualizados: number;
+  estadosMonitoreoActualizados?: number; // 🆕 Contador de estados actualizados
   errores: string[];
   detalles: {
     aeronaveId: string;
@@ -16,6 +17,7 @@ export interface PropagacionResult {
       numeroSerie: string;
       nombre: string;
       actualizado: boolean;
+      estadosMonitoreoActualizados?: number; // 🆕 Estados por componente
       error?: string;
     }>;
   };
@@ -34,6 +36,7 @@ export async function propagarHorasAComponentes(
   const result: PropagacionResult = {
     success: false,
     componentesActualizados: 0,
+    estadosMonitoreoActualizados: 0, // 🆕 Inicializar contador
     errores: [],
     detalles: {
       aeronaveId,
@@ -157,6 +160,42 @@ export async function propagarHorasAComponentes(
 
         componenteInfo.actualizado = true;
         result.componentesActualizados++;
+        
+        // 🆕 ACTUALIZAR ESTADOS DE MONITOREO DEL COMPONENTE
+        let estadosActualizadosComponente = 0;
+        try {
+          const EstadoMonitoreoComponente = (await import('../models/EstadoMonitoreoComponente')).EstadoMonitoreoComponente;
+          
+          // Buscar todos los estados de monitoreo de este componente
+          const estadosMonitoreo = await EstadoMonitoreoComponente.find({ 
+            componenteId: componente._id 
+          });
+
+          // Actualizar cada estado de monitoreo
+          for (const estado of estadosMonitoreo) {
+            await EstadoMonitoreoComponente.findByIdAndUpdate(
+              estado._id,
+              {
+                $inc: { valorActual: incrementoHoras }
+              }
+            );
+            
+            estadosActualizadosComponente++;
+            result.estadosMonitoreoActualizados = (result.estadosMonitoreoActualizados || 0) + 1;
+            
+            logger.debug(`Estado de monitoreo ${estado._id} actualizado: +${incrementoHoras} horas`);
+          }
+
+          if (estadosMonitoreo.length > 0) {
+            logger.info(`${estadosMonitoreo.length} estados de monitoreo actualizados para componente ${componente.numeroSerie}`);
+          }
+
+        } catch (monitoreoError) {
+          logger.warn(`Error actualizando estados de monitoreo para componente ${componente.numeroSerie}:`, monitoreoError);
+          // No fallar la propagación general por errores de monitoreo
+        }
+        
+        componenteInfo.estadosMonitoreoActualizados = estadosActualizadosComponente;
         
         logger.debug(`Componente ${componente.numeroSerie} actualizado con ${incrementoHoras} horas`);
 
