@@ -99,7 +99,7 @@ export class MonitoreoGranularService {
         // Verificar vida útil
         for (const vidaUtil of componente.vidaUtil) {
           if (vidaUtil.limite && vidaUtil.acumulado !== undefined) {
-            const progreso = (vidaUtil.acumulado / vidaUtil.limite) * 100;
+            const progreso = (Number(vidaUtil.acumulado) / Number(vidaUtil.limite)) * 100;
             let estado: 'OK' | 'PROXIMO' | 'VENCIDO' = 'OK';
             let criticidad: 'BAJA' | 'MEDIA' | 'ALTA' | 'CRITICA' = 'BAJA';
             
@@ -122,9 +122,9 @@ export class MonitoreoGranularService {
                 nombre: componente.nombre,
                 categoria: componente.categoria,
                 controlDescripcion: `Vida Útil (${vidaUtil.unidad})`,
-                valorActual: vidaUtil.acumulado,
-                valorLimite: vidaUtil.limite,
-                unidad: vidaUtil.unidad,
+                valorActual: Number(vidaUtil.acumulado),
+                valorLimite: Number(vidaUtil.limite),
+                unidad: String(vidaUtil.unidad),
                 estado,
                 progreso: Math.round(progreso),
                 fechaProximaRevision: componente.proximaInspeccion?.toISOString() || new Date().toISOString(),
@@ -138,7 +138,7 @@ export class MonitoreoGranularService {
         
         // Verificar mantenimiento programado
         for (const mantenimiento of componente.mantenimientoProgramado) {
-          if (mantenimiento.estado && ['VENCIDO', 'PROXIMO'].includes(mantenimiento.estado)) {
+          if (mantenimiento.estado && ['VENCIDO', 'PROXIMO'].includes(String(mantenimiento.estado))) {
             let criticidad: 'BAJA' | 'MEDIA' | 'ALTA' | 'CRITICA' = 'MEDIA';
             if (mantenimiento.estado === 'VENCIDO') {
               criticidad = 'CRITICA';
@@ -150,12 +150,12 @@ export class MonitoreoGranularService {
               nombre: componente.nombre,
               categoria: componente.categoria,
               controlDescripcion: `Mantenimiento ${mantenimiento.tipo}`,
-              valorActual: mantenimiento.horasProximoVencimiento || 0,
-              valorLimite: (mantenimiento.horasProximoVencimiento || 0) + (mantenimiento.alertaAnticipada || 50),
+              valorActual: Number(mantenimiento.horasProximoVencimiento) || 0,
+              valorLimite: (Number(mantenimiento.horasProximoVencimiento) || 0) + (Number(mantenimiento.alertaAnticipada) || 50),
               unidad: 'HORAS',
               estado: mantenimiento.estado as 'OK' | 'PROXIMO' | 'VENCIDO',
               progreso: mantenimiento.estado === 'VENCIDO' ? 100 : 95,
-              fechaProximaRevision: mantenimiento.proximoVencimiento?.toISOString() || new Date().toISOString(),
+              fechaProximaRevision: mantenimiento.proximoVencimiento && mantenimiento.proximoVencimiento instanceof Date ? mantenimiento.proximoVencimiento.toISOString() : new Date().toISOString(),
               alertaActiva: true,
               criticidad
             };

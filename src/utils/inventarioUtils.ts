@@ -89,6 +89,7 @@ export async function propagarHorasAComponentes(
         nombre: string;
         actualizado: boolean;
         error?: string;
+        estadosMonitoreoActualizados?: number;
       } = {
         componenteId: componente._id.toString(),
         numeroSerie: componente.numeroSerie,
