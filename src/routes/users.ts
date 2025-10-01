@@ -1,7 +1,9 @@
 import express from 'express';
 import User, { UserRole } from '../models/User';
 import { requireAuth } from '../middleware/clerkAuth';
-import { requirePermission, hasPermission, getRolePermissions } from '../middleware/roleAuth';
+import { requirePermission, hasPermission, getRolePermissions, auditAction } from '../middleware/roleAuth';
+import { PermissionService } from '../services/PermissionService';
+import { AuditService } from '../services/AuditService';
 import logger from '../utils/logger';
 
 const router = express.Router();
@@ -9,18 +11,25 @@ const router = express.Router();
 // GET /api/users - Obtener todos los usuarios
 router.get('/', requireAuth, requirePermission('VIEW_USERS'), async (req, res) => {
   try {
-    logger.info('Obteniendo lista de todos los usuarios');
+    const { includeInactive = 'false' } = req.query;
+    const filter: any = {};
+    
+    // Solo incluir usuarios inactivos si se especifica explícitamente
+    if (includeInactive !== 'true') {
+      filter.isActive = { $ne: false }; // Incluye usuarios sin isActive y con isActive: true
+    }
 
-    const usuarios = await User.find({}, {
+    const usuarios = await User.find(filter, {
       password: 0 // Excluir contraseña por seguridad
     }).sort({ createdAt: -1 });
 
-    logger.info(`Se encontraron ${usuarios.length} usuarios`);
+    logger.info(`Se encontraron ${usuarios.length} usuarios ${includeInactive === 'true' ? '(incluye inactivos)' : '(solo activos)'}`);
 
     res.json({
       success: true,
       data: usuarios,
-      total: usuarios.length
+      total: usuarios.length,
+      filter: { includeInactive: includeInactive === 'true' }
     });
 
   } catch (error) {
@@ -28,7 +37,7 @@ router.get('/', requireAuth, requirePermission('VIEW_USERS'), async (req, res) =
     res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
-      error: process.env.NODE_ENV === 'development' ? error : {}
+      code: 'USERS_FETCH_ERROR'
     });
   }
 });
@@ -38,12 +47,19 @@ router.get('/stats', requireAuth, requirePermission('VIEW_USERS'), async (req, r
   try {
     logger.info('Obteniendo estadísticas de usuarios');
 
-    const totalUsuarios = await User.countDocuments();
-    const usuariosRecientes = await User.countDocuments({
-      createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } // Últimos 30 días
-    });
+    // Filtro para usuarios activos
+    const activeFilter = { isActive: { $ne: false } };
+    
+    const [totalUsuarios, usuariosActivos, usuariosRecientes] = await Promise.all([
+      User.countDocuments(),
+      User.countDocuments(activeFilter),
+      User.countDocuments({
+        ...activeFilter,
+        createdAt: { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) }
+      })
+    ]);
 
-    // Estadísticas por rol
+    // Estadísticas por rol (solo usuarios activos)
     const usuariosPorRol: Record<UserRole, number> = {
       [UserRole.ADMINISTRADOR]: 0,
       [UserRole.MECANICO]: 0,
@@ -51,14 +67,19 @@ router.get('/stats', requireAuth, requirePermission('VIEW_USERS'), async (req, r
       [UserRole.ESPECIALISTA]: 0
     };
     
+    // Contar usuarios por rol (solo activos)
     for (const role of Object.values(UserRole)) {
-      usuariosPorRol[role] = await User.countDocuments({ role });
+      usuariosPorRol[role] = await User.countDocuments({ 
+        role, 
+        ...activeFilter 
+      });
     }
 
     const stats = {
       totalUsuarios,
+      usuariosActivos,
+      usuariosInactivos: totalUsuarios - usuariosActivos,
       usuariosRecientes,
-      usuariosActivos: totalUsuarios, // Por ahora todos son considerados activos
       usuariosPorRol
     };
 
@@ -79,105 +100,126 @@ router.get('/stats', requireAuth, requirePermission('VIEW_USERS'), async (req, r
   }
 });
 
-// PUT /api/users/:id/role - Cambiar rol de usuario (solo administradores)
-router.put('/:id/role', requireAuth, requirePermission('MANAGE_USERS'), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { newRole } = req.body;
+// PUT /api/users/:id/role - Cambiar rol de usuario (solo administradores) - MEJORADO
+router.put('/:id/role', 
+  requireAuth, 
+  requirePermission('MANAGE_USERS'), 
+  auditAction('CAMBIO_ROL_USUARIO'),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { newRole, reason } = req.body;
+      const managerInfo = req.userInfo!;
 
-    logger.info(`Cambiando rol de usuario ${id} a ${newRole}`);
+      logger.info(`Usuario ${managerInfo.email} cambiando rol de usuario ${id} a ${newRole}`);
 
-    // Validar que el nuevo rol es válido
-    if (!Object.values(UserRole).includes(newRole)) {
-      return res.status(400).json({
+      // Validar que el nuevo rol es válido
+      if (!Object.values(UserRole).includes(newRole)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Rol inválido',
+          validRoles: Object.values(UserRole),
+          timestamp: new Date().toISOString()
+        });
+      }
+
+      // Obtener el usuario actual antes del cambio
+      const usuario = await User.findById(id);
+      if (!usuario) {
+        return res.status(404).json({
+          success: false,
+          message: 'Usuario no encontrado'
+        });
+      }
+
+      // Validar que se puede hacer el cambio
+      const validation = PermissionService.validateRoleChange(
+        usuario.role, 
+        newRole, 
+        managerInfo.role
+      );
+
+      if (!validation.valid) {
+        return res.status(403).json({
+          success: false,
+          message: validation.reason
+        });
+      }
+
+      // Registrar el cambio en el historial antes de actualizar
+      const previousRole = usuario.role;
+      
+      // Actualizar usuario con auditoría
+      usuario.role = newRole;
+      usuario.updatedBy = managerInfo.clerkId;
+      
+      // El middleware pre-save se encargará de agregar al historial
+      await usuario.save();
+
+      // Registrar auditoría del cambio de rol
+      AuditService.logRoleChange({
+        targetUserId: usuario._id.toString(),
+        targetUserEmail: usuario.email,
+        previousRole,
+        newRole,
+        changedBy: managerInfo.clerkId,
+        changedByEmail: managerInfo.email,
+        reason: reason || 'Cambio administrativo',
+        ip: req.ip
+      });
+
+      logger.info(`Rol actualizado exitosamente: ${usuario.name} (${usuario.email}) -> ${previousRole} to ${newRole} por ${managerInfo.email}`);
+
+      res.json({
+        success: true,
+        message: 'Rol actualizado exitosamente',
+        user: {
+          _id: usuario._id,
+          name: usuario.name,
+          email: usuario.email,
+          role: usuario.role,
+          updatedBy: managerInfo.email,
+          updatedAt: new Date()
+        },
+        roleChange: {
+          previousRole,
+          newRole,
+          changedBy: managerInfo.email,
+          reason: reason || 'No especificado'
+        }
+      });
+
+    } catch (error) {
+      logger.error('Error al cambiar rol:', error);
+      res.status(500).json({
         success: false,
-        message: 'Rol inválido',
-        validRoles: Object.values(UserRole)
+        message: 'Error interno del servidor',
+        timestamp: new Date().toISOString(),
+        error: process.env.NODE_ENV === 'development' ? error : {}
       });
     }
+  });
 
-    const usuario = await User.findByIdAndUpdate(
-      id,
-      { role: newRole },
-      { new: true, runValidators: true }
-    );
-
-    if (!usuario) {
-      return res.status(404).json({
-        success: false,
-        message: 'Usuario no encontrado'
-      });
-    }
-
-    logger.info(`Rol actualizado exitosamente: ${usuario.name} -> ${newRole}`);
-
-    res.json({
-      success: true,
-      message: 'Rol actualizado exitosamente',
-      user: usuario
-    });
-
-  } catch (error) {
-    logger.error('Error al cambiar rol:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error interno del servidor',
-      error: process.env.NODE_ENV === 'development' ? error : {}
-    });
-  }
-});
-
-// GET /api/users/me/permissions - Obtener permisos del usuario actual
+// GET /api/users/me/permissions - Obtener permisos del usuario actual (MEJORADO)
 router.get('/me/permissions', requireAuth, async (req, res) => {
   try {
     const clerkId = (req as any).user.sub;
-    const user = await User.findOne({ clerkId });
-
-    if (!user) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'Usuario no encontrado' 
-      });
-    }
-
-    const permissions = getRolePermissions(user.role);
     
-    // Convertir array de permisos a objeto booleano
-    const permissionsObj = {
-      canManageUsers: hasPermission(user.role, 'MANAGE_USERS'),
-      canViewUsers: hasPermission(user.role, 'VIEW_USERS'),
-      canCreateComponents: hasPermission(user.role, 'CREATE_COMPONENTS'),
-      canEditComponents: hasPermission(user.role, 'EDIT_COMPONENTS'),
-      canDeleteComponents: hasPermission(user.role, 'DELETE_COMPONENTS'),
-      canViewComponents: hasPermission(user.role, 'VIEW_COMPONENTS'),
-      canCreateWorkOrders: hasPermission(user.role, 'CREATE_WORK_ORDERS'),
-      canEditWorkOrders: hasPermission(user.role, 'EDIT_WORK_ORDERS'),
-      canDeleteWorkOrders: hasPermission(user.role, 'DELETE_WORK_ORDERS'),
-      canViewWorkOrders: hasPermission(user.role, 'VIEW_WORK_ORDERS'),
-      canCompleteWorkOrders: hasPermission(user.role, 'COMPLETE_WORK_ORDERS'),
-      canCreateInspections: hasPermission(user.role, 'CREATE_INSPECTIONS'),
-      canEditInspections: hasPermission(user.role, 'EDIT_INSPECTIONS'),
-      canDeleteInspections: hasPermission(user.role, 'DELETE_INSPECTIONS'),
-      canViewInspections: hasPermission(user.role, 'VIEW_INSPECTIONS'),
-      canCertifyInspections: hasPermission(user.role, 'CERTIFY_INSPECTIONS'),
-      canCreateInventory: hasPermission(user.role, 'CREATE_INVENTORY'),
-      canEditInventory: hasPermission(user.role, 'EDIT_INVENTORY'),
-      canDeleteInventory: hasPermission(user.role, 'DELETE_INVENTORY'),
-      canViewInventory: hasPermission(user.role, 'VIEW_INVENTORY'),
-      canCreateCatalogs: hasPermission(user.role, 'CREATE_CATALOGS'),
-      canEditCatalogs: hasPermission(user.role, 'EDIT_CATALOGS'),
-      canDeleteCatalogs: hasPermission(user.role, 'DELETE_CATALOGS'),
-      canViewCatalogs: hasPermission(user.role, 'VIEW_CATALOGS'),
-      canViewDashboard: hasPermission(user.role, 'VIEW_DASHBOARD'),
-      canViewAdvancedReports: hasPermission(user.role, 'VIEW_ADVANCED_REPORTS'),
-      canAccessSystemConfig: hasPermission(user.role, 'SYSTEM_CONFIG')
-    };
+    // Usar el nuevo servicio de permisos
+    const userPermissionInfo = await PermissionService.getUserPermissionInfo(clerkId);
+
+    logger.debug(`Permisos obtenidos para usuario: ${userPermissionInfo.user.email} - Rol: ${userPermissionInfo.role}`);
 
     res.json({
       success: true,
       user: {
-        ...user.toObject(),
-        permissions: permissionsObj
+        ...userPermissionInfo.user,
+        permissions: userPermissionInfo.permissionsObj
+      },
+      roleInfo: {
+        role: userPermissionInfo.role,
+        hierarchy: userPermissionInfo.roleHierarchy,
+        allPermissions: userPermissionInfo.permissions
       }
     });
 
@@ -185,7 +227,8 @@ router.get('/me/permissions', requireAuth, async (req, res) => {
     logger.error('Error al obtener permisos:', error);
     res.status(500).json({ 
       success: false,
-      error: 'Error interno del servidor' 
+      error: 'Error interno del servidor',
+      timestamp: new Date().toISOString()
     });
   }
 });

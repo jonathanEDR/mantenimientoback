@@ -9,8 +9,9 @@
     "start": "node dist/index.js",
     "start:dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "start:prod:safe": "powershell -ExecutionPolicy Bypass -File ./scripts/start.ps1 -Port 5000",
-    "verify-users": "ts-node src/scripts/verifyUsers.ts",
-    "verify-users:advanced": "ts-node src/scripts/verifyUsersAdvanced.ts",
+    "verify-users": "ts-node src/scripts/verificarUsuarios.ts",
+    "migrate-users": "ts-node src/scripts/migrateUsers.ts",
+    "migrate-users:improved": "ts-node src/scripts/migrateUsersImproved.ts",
     "status": "ts-node src/scripts/quickStatus.ts",
     "test-registration": "ts-node src/scripts/testRegistration.ts",
     "test-endpoint": "ts-node src/scripts/testEndpoint.ts"
