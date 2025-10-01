@@ -6,6 +6,7 @@ import mantenimientoRoutes from './mantenimiento';
 import herramientasRoutes from './herramientas';
 import monitoreoRoutes from './monitoreo';
 import estadosMonitoreoComponenteRoutes from './estadosMonitoreoComponente';
+import dashboardMonitoreoRoutes from './dashboardMonitoreo';
 
 const router = express.Router();
 
@@ -17,5 +18,6 @@ router.use('/mantenimiento', mantenimientoRoutes);
 router.use('/herramientas', herramientasRoutes);
 router.use('/monitoreo', monitoreoRoutes);
 router.use('/estados-monitoreo-componente', estadosMonitoreoComponenteRoutes);
+router.use('/dashboard', dashboardMonitoreoRoutes);
 
 export default router;

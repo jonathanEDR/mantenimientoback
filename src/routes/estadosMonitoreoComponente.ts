@@ -52,7 +52,8 @@ router.post('/componente/:componenteId', async (req: Request, res: Response) => 
       unidad,
       fechaProximaRevision,
       observaciones,
-      configuracionPersonalizada
+      configuracionPersonalizada,
+      configuracionOverhaul
     } = req.body;
 
     if (!Types.ObjectId.isValid(componenteId)) {
@@ -109,7 +110,14 @@ router.post('/componente/:componenteId', async (req: Request, res: Response) => 
       unidad: unidad || 'HORAS',
       fechaProximaRevision: fechaProximaRevision || new Date(),
       observaciones,
-      configuracionPersonalizada
+      configuracionPersonalizada,
+      configuracionOverhaul
+    });
+
+    // Log para debug
+    logger.info('Creando estado con configuración overhaul:', {
+      componenteId,
+      configuracionOverhaul: configuracionOverhaul || 'NO PROPORCIONADA'
     });
 
     await nuevoEstado.save();
@@ -148,7 +156,8 @@ router.put('/:estadoId', async (req: Request, res: Response) => {
       unidad,
       fechaProximaRevision,
       observaciones,
-      configuracionPersonalizada
+      configuracionPersonalizada,
+      configuracionOverhaul
     } = req.body;
 
     if (!Types.ObjectId.isValid(estadoId)) {
@@ -178,6 +187,18 @@ router.put('/:estadoId', async (req: Request, res: Response) => {
         ...configuracionPersonalizada
       };
     }
+    if (configuracionOverhaul !== undefined) {
+      estado.configuracionOverhaul = {
+        ...estado.configuracionOverhaul,
+        ...configuracionOverhaul
+      };
+    }
+
+    // Log para debug
+    logger.info('Actualizando estado con configuración overhaul:', {
+      estadoId,
+      configuracionOverhaul: configuracionOverhaul || 'NO MODIFICADA'
+    });
 
     await estado.save();
 
@@ -401,6 +422,108 @@ router.get('/granular/aeronave/:aeronaveId/criticas', async (req: Request, res: 
 
   } catch (error) {
     logger.error('Error al obtener alertas críticas de aeronave:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Completar overhaul de un estado de monitoreo
+router.post('/:estadoId/completar-overhaul', async (req: Request, res: Response) => {
+  try {
+    const { estadoId } = req.params;
+    const { observaciones } = req.body;
+
+    if (!Types.ObjectId.isValid(estadoId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de estado inválido'
+      });
+    }
+
+    const estado = await EstadoMonitoreoComponente.findById(estadoId)
+      .populate('componenteId', 'numeroSerie nombre categoria aeronaveActual');
+
+    if (!estado) {
+      return res.status(404).json({
+        success: false,
+        message: 'Estado de monitoreo no encontrado'
+      });
+    }
+
+    // Verificar que el estado tenga overhaul habilitado y requerido
+    if (!estado.configuracionOverhaul?.habilitarOverhaul) {
+      return res.status(400).json({
+        success: false,
+        message: 'Este estado no tiene overhauls habilitados'
+      });
+    }
+
+    if (!estado.configuracionOverhaul?.requiereOverhaul) {
+      return res.status(400).json({
+        success: false,
+        message: 'Este estado no requiere overhaul actualmente'
+      });
+    }
+
+    // Obtener horas actuales de la aeronave para el cálculo
+    let horasActuales = estado.valorActual;
+    if (estado.basadoEnAeronave) {
+      const componente = await Componente.findById(estado.componenteId)
+        .populate('aeronaveActual', 'horasVuelo')
+        .lean();
+
+      if (componente && componente.aeronaveActual && typeof componente.aeronaveActual === 'object') {
+        horasActuales = Math.max(0, (componente.aeronaveActual as any).horasVuelo - estado.offsetInicial);
+      }
+    }
+
+    // Actualizar configuración de overhaul
+    const configOverhaul = estado.configuracionOverhaul;
+    configOverhaul.cicloActual += 1;
+    configOverhaul.horasUltimoOverhaul = horasActuales;
+    // El próximo overhaul se calculará automáticamente en el middleware pre('save')
+    configOverhaul.requiereOverhaul = false;
+    configOverhaul.fechaUltimoOverhaul = new Date();
+
+    // Log para debugging
+    logger.info(`Completando overhaul - Ciclo ${configOverhaul.cicloActual}:`, {
+      horasActuales,
+      intervaloOverhaul: configOverhaul.intervaloOverhaul,
+      valorLimite: estado.valorLimite
+    });
+    
+    if (observaciones) {
+      configOverhaul.observacionesOverhaul = observaciones;
+    }
+
+    // Actualizar estado - el middleware se encargará de recalcular el estado
+    estado.estado = 'OK';
+    estado.alertaActiva = false;
+    estado.observaciones = observaciones ? 
+      `${estado.observaciones ? estado.observaciones + ' | ' : ''}Overhaul completado: ${observaciones}` : 
+      estado.observaciones;
+
+    await estado.save();
+
+    // Popular los datos para la respuesta
+    await estado.populate([
+      { path: 'catalogoControlId', select: 'descripcionCodigo horaInicial horaFinal' },
+      { path: 'componenteId', select: 'numeroSerie nombre categoria' }
+    ]);
+
+    logger.info(`Overhaul completado para estado ${estadoId} - Ciclo ${configOverhaul.cicloActual}`);
+
+    res.json({
+      success: true,
+      data: estado,
+      message: `Overhaul completado exitosamente. Ciclo ${configOverhaul.cicloActual} de ${configOverhaul.ciclosOverhaul}`
+    });
+
+  } catch (error) {
+    logger.error('Error al completar overhaul:', error);
     res.status(500).json({
       success: false,
       message: 'Error interno del servidor',

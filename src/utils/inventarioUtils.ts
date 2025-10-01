@@ -172,19 +172,22 @@ export async function propagarHorasAComponentes(
             componenteId: componente._id 
           });
 
-          // Actualizar cada estado de monitoreo
+          // Actualizar cada estado de monitoreo usando save() para disparar middleware
           for (const estado of estadosMonitoreo) {
-            await EstadoMonitoreoComponente.findByIdAndUpdate(
-              estado._id,
-              {
-                $inc: { valorActual: incrementoHoras }
-              }
-            );
-            
-            estadosActualizadosComponente++;
-            result.estadosMonitoreoActualizados = (result.estadosMonitoreoActualizados || 0) + 1;
-            
-            logger.debug(`Estado de monitoreo ${estado._id} actualizado: +${incrementoHoras} horas`);
+            // Cargar el documento completo para poder usar save()
+            const estadoCompleto = await EstadoMonitoreoComponente.findById(estado._id);
+            if (estadoCompleto) {
+              // Incrementar el valor actual
+              estadoCompleto.valorActual += incrementoHoras;
+              
+              // Usar save() para disparar el middleware pre('save') con cálculos de overhaul
+              await estadoCompleto.save();
+              
+              estadosActualizadosComponente++;
+              result.estadosMonitoreoActualizados = (result.estadosMonitoreoActualizados || 0) + 1;
+              
+              logger.debug(`Estado monitoreo actualizado: +${incrementoHoras}h`);
+            }
           }
 
           if (estadosMonitoreo.length > 0) {

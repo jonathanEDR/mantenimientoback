@@ -1,4 +1,5 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
+import logger from '../utils/logger';
 
 export interface IEstadoMonitoreoComponente extends Document {
   componenteId: Types.ObjectId;
@@ -6,11 +7,26 @@ export interface IEstadoMonitoreoComponente extends Document {
   valorActual: number;
   valorLimite: number;
   unidad: string;
-  estado: 'OK' | 'PROXIMO' | 'VENCIDO';
+  estado: 'OK' | 'PROXIMO' | 'VENCIDO' | 'OVERHAUL_REQUERIDO';
   fechaProximaRevision: Date;
   fechaUltimaActualizacion: Date;
   alertaActiva: boolean;
   observaciones?: string;
+  // Campos para unificación de sistemas
+  basadoEnAeronave: boolean; // Si usa horas de aeronave o del componente individual
+  offsetInicial: number; // Horas de aeronave cuando se creó/instaló el estado
+  // Configuración de Overhauls
+  configuracionOverhaul?: {
+    habilitarOverhaul: boolean;
+    intervaloOverhaul: number; // Horas entre overhauls
+    ciclosOverhaul: number; // Número máximo de overhauls permitidos
+    cicloActual: number; // Ciclo actual (0 = primer uso, 1 = primer overhaul, etc.)
+    horasUltimoOverhaul: number; // Horas cuando se hizo el último overhaul
+    proximoOverhaulEn: number; // Horas cuando debe hacerse el próximo overhaul
+    requiereOverhaul: boolean; // Si actualmente requiere overhaul
+    fechaUltimoOverhaul?: Date; // Cuando se completó el último overhaul
+    observacionesOverhaul?: string;
+  };
   configuracionPersonalizada?: {
     alertaAnticipada: number; // Horas antes del vencimiento para alertar
     criticidad: 'BAJA' | 'MEDIA' | 'ALTA' | 'CRITICA';
@@ -47,7 +63,7 @@ const estadoMonitoreoComponenteSchema = new Schema<IEstadoMonitoreoComponente>({
   },
   estado: {
     type: String,
-    enum: ['OK', 'PROXIMO', 'VENCIDO'],
+    enum: ['OK', 'PROXIMO', 'VENCIDO', 'OVERHAUL_REQUERIDO'],
     required: true,
     default: 'OK'
   },
@@ -66,6 +82,58 @@ const estadoMonitoreoComponenteSchema = new Schema<IEstadoMonitoreoComponente>({
   observaciones: {
     type: String,
     trim: true
+  },
+  // Campos para unificación de sistemas
+  basadoEnAeronave: {
+    type: Boolean,
+    default: true // Por defecto usar horas de aeronave
+  },
+  offsetInicial: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  // Configuración de Overhauls
+  configuracionOverhaul: {
+    habilitarOverhaul: {
+      type: Boolean,
+      default: false
+    },
+    intervaloOverhaul: {
+      type: Number,
+      default: 500, // 500 horas entre overhauls por defecto
+      min: 1
+    },
+    ciclosOverhaul: {
+      type: Number,
+      default: 5, // Máximo 5 overhauls por defecto
+      min: 1
+    },
+    cicloActual: {
+      type: Number,
+      default: 0, // Empezar en ciclo 0 (primer uso)
+      min: 0
+    },
+    horasUltimoOverhaul: {
+      type: Number,
+      default: 0,
+      min: 0
+    },
+    proximoOverhaulEn: {
+      type: Number,
+      default: 500 // Primera vez en 500 horas
+    },
+    requiereOverhaul: {
+      type: Boolean,
+      default: false
+    },
+    fechaUltimoOverhaul: {
+      type: Date
+    },
+    observacionesOverhaul: {
+      type: String,
+      trim: true
+    }
   },
   configuracionPersonalizada: {
     alertaAnticipada: {
@@ -101,23 +169,132 @@ estadoMonitoreoComponenteSchema.index({
 }, { unique: true }); // Un componente no puede tener el mismo control duplicado
 
 // Middleware para actualizar el estado automáticamente
-estadoMonitoreoComponenteSchema.pre('save', function(next) {
-  const horasRestantes = this.valorLimite - this.valorActual;
-  const alertaAnticipada = this.configuracionPersonalizada?.alertaAnticipada || 50;
+estadoMonitoreoComponenteSchema.pre('save', async function(next) {
+  try {
+    let valorActualCalculado = this.valorActual;
 
-  if (horasRestantes <= 0) {
-    this.estado = 'VENCIDO';
-    this.alertaActiva = true;
-  } else if (horasRestantes <= alertaAnticipada) {
-    this.estado = 'PROXIMO';
-    this.alertaActiva = true;
-  } else {
-    this.estado = 'OK';
-    this.alertaActiva = false;
+    // Si está basado en aeronave, calcular valor actual desde horas acumuladas del componente
+    if (this.basadoEnAeronave && this.isModified('valorActual')) {
+      // Obtener las horas acumuladas del componente específico
+      const Componente = this.model('Componente');
+      const componente = await Componente.findById(this.componenteId)
+        .select('vidaUtil')
+        .lean() as any;
+
+      if (componente?.vidaUtil) {
+        // Buscar la vida útil en HORAS del componente
+        const vidaUtilHoras = componente.vidaUtil.find((vida: any) => vida.unidad === 'HORAS');
+        
+        if (vidaUtilHoras) {
+          // Usar las horas acumuladas del componente (desde su instalación)
+          valorActualCalculado = Math.max(0, vidaUtilHoras.acumulado + this.offsetInicial);
+          
+          // Actualizar el valorActual para mantener consistencia
+          this.valorActual = valorActualCalculado;
+          
+          logger.debug(`[ESTADO] Componente ${this.componenteId}: horas acumuladas=${vidaUtilHoras.acumulado}, offset=${this.offsetInicial}, valorFinal=${valorActualCalculado}`);
+        }
+      }
+    }
+
+    // Calcular estado basándose en el valor actual (calculado o manual)
+    const horasRestantes = this.valorLimite - valorActualCalculado;
+    const alertaAnticipada = this.configuracionPersonalizada?.alertaAnticipada || 50;
+
+    // ============ LÓGICA DE OVERHAULS INTEGRADA CON MONITOREO ============
+    if (this.configuracionOverhaul?.habilitarOverhaul) {
+      const configOverhaul = this.configuracionOverhaul;
+
+      // Log esencial para monitoreo de overhauls
+      logger.debug(`[OVERHAUL] Estado calculado - Valor: ${valorActualCalculado}/${this.valorLimite}, Intervalo: ${configOverhaul.intervaloOverhaul}h, Ciclo: ${configOverhaul.cicloActual}/${configOverhaul.ciclosOverhaul}`);
+
+      // NUEVA LÓGICA: Calcular overhauls basándose en intervalos fijos
+      // Calcular cuántos intervalos de overhaul caben en el límite del componente
+      const intervalosEnVidaUtil = Math.floor(this.valorLimite / configOverhaul.intervaloOverhaul);
+      
+      // Calcular en qué intervalo está actualmente el componente (basado en intervalos fijos)
+      const intervaloActual = Math.floor(valorActualCalculado / configOverhaul.intervaloOverhaul);
+      
+      // Calcular el próximo punto de overhaul basándose en intervalos fijos
+      const proximoIntervalo = intervaloActual + 1;
+      const proximoOverhaulEn = proximoIntervalo * configOverhaul.intervaloOverhaul;
+      
+      // Verificar si necesita overhaul ahora (ha alcanzado un múltiplo del intervalo)
+      const necesitaOverhaulAhora = (valorActualCalculado >= proximoOverhaulEn - configOverhaul.intervaloOverhaul) && 
+                                   (valorActualCalculado >= (intervaloActual * configOverhaul.intervaloOverhaul)) &&
+                                   (intervaloActual > configOverhaul.cicloActual);
+      
+      // Actualizar configuración
+      configOverhaul.proximoOverhaulEn = proximoOverhaulEn;
+
+      logger.debug(`[OVERHAUL] Intervalos: actual=${intervaloActual}, próximo=${proximoIntervalo}, próximo overhaul en: ${proximoOverhaulEn}h`);
+
+      // VERIFICAR ESTADO BASÁNDOSE EN INTERVALOS Y LÍMITE DEL COMPONENTE
+
+      // 1. Si ya superó el límite del componente
+      if (valorActualCalculado >= this.valorLimite) {
+        // Si aún puede hacer overhauls y necesita uno
+        if (configOverhaul.cicloActual < configOverhaul.ciclosOverhaul && necesitaOverhaulAhora) {
+          configOverhaul.requiereOverhaul = true;
+          this.estado = 'OVERHAUL_REQUERIDO';
+          this.alertaActiva = true;
+          logger.warn(`[OVERHAUL] ⚠️ Componente vencido requiere overhaul - ${valorActualCalculado}/${this.valorLimite}h`);
+        } else if (configOverhaul.cicloActual >= configOverhaul.ciclosOverhaul) {
+          // Ya no puede hacer más overhauls
+          configOverhaul.requiereOverhaul = false;
+          this.estado = 'VENCIDO';
+          this.alertaActiva = true;
+          logger.error(`[OVERHAUL] ❌ Componente definitivamente vencido - Máximo overhauls alcanzado (${configOverhaul.cicloActual}/${configOverhaul.ciclosOverhaul})`);
+        } else {
+          // Vencido pero sin overhaul requerido aún
+          this.estado = 'VENCIDO';
+          this.alertaActiva = true;
+          logger.info(`[OVERHAUL] Componente vencido, próximo overhaul en: ${proximoOverhaulEn}h`);
+        }
+      }
+      // 2. Si necesita overhaul ahora mismo (antes del límite)
+      else if (necesitaOverhaulAhora && configOverhaul.cicloActual < configOverhaul.ciclosOverhaul) {
+        configOverhaul.requiereOverhaul = true;
+        this.estado = 'OVERHAUL_REQUERIDO';
+        this.alertaActiva = true;
+        logger.warn(`[OVERHAUL] 🚨 OVERHAUL REQUERIDO - ${valorActualCalculado}h (intervalo: ${configOverhaul.intervaloOverhaul}h, ciclo: ${configOverhaul.cicloActual}/${configOverhaul.ciclosOverhaul})`);
+      }
+      // 3. Si está próximo a un overhaul
+      else if (valorActualCalculado >= (proximoOverhaulEn - alertaAnticipada)) {
+        configOverhaul.requiereOverhaul = false;
+        this.estado = 'PROXIMO';
+        this.alertaActiva = true;
+        logger.info(`[OVERHAUL] ⚠️ Próximo a overhaul - ${valorActualCalculado}h (faltan ${proximoOverhaulEn - valorActualCalculado}h para overhaul)`);
+      }
+      // 4. Estado normal
+      else {
+        configOverhaul.requiereOverhaul = false;
+        this.estado = 'OK';
+        this.alertaActiva = false;
+        logger.debug(`[OVERHAUL] ✅ Estado OK - ${valorActualCalculado}h (próximo overhaul en ${proximoOverhaulEn}h)`);
+      }
+    }
+
+    // ============ LÓGICA NORMAL DE VENCIMIENTO ============
+    // Solo aplicar si no está en modo overhaul
+    if (!this.configuracionOverhaul?.habilitarOverhaul) {
+      if (horasRestantes <= 0) {
+        this.estado = 'VENCIDO';
+        this.alertaActiva = true;
+      } else if (horasRestantes <= alertaAnticipada) {
+        this.estado = 'PROXIMO';
+        this.alertaActiva = true;
+      } else {
+        this.estado = 'OK';
+        this.alertaActiva = false;
+      }
+    }
+
+    this.fechaUltimaActualizacion = new Date();
+    next();
+  } catch (error) {
+    next(error instanceof Error ? error : new Error('Error desconocido en middleware'));
   }
-
-  this.fechaUltimaActualizacion = new Date();
-  next();
 });
 
 export const EstadoMonitoreoComponente = mongoose.model<IEstadoMonitoreoComponente>(
