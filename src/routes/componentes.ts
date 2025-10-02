@@ -1,5 +1,6 @@
 import express from 'express';
 import Componente, { ComponenteCategoria, EstadoComponente } from '../models/Componente';
+import EstadoMonitoreoComponente from '../models/EstadoMonitoreoComponente';
 import { requireAuth } from '../middleware/clerkAuth';
 import { requirePermission } from '../middleware/roleAuth';
 import logger from '../utils/logger';
@@ -166,6 +167,66 @@ router.get('/aeronave/id/:aeronaveId', requireAuth, requirePermission('VIEW_COMP
 
   } catch (error) {
     logger.error(`Error al obtener componentes de aeronave ID ${req.params.aeronaveId}:`, error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : {}
+    });
+  }
+});
+
+// ✅ NUEVO ENDPOINT OPTIMIZADO: GET /api/mantenimiento/componentes/aeronave/id/:aeronaveId/con-estados
+// Obtiene componentes de una aeronave CON sus estados de monitoreo en 1 sola query (evita N+1)
+router.get('/aeronave/id/:aeronaveId/con-estados', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req, res) => {
+  try {
+    const { aeronaveId } = req.params;
+    logger.info(`🚀 [OPTIMIZADO] Obteniendo componentes con estados de la aeronave ID: ${aeronaveId}`);
+
+    // 1. Obtener componentes de la aeronave
+    const componentes = await Componente.find({ aeronaveActual: aeronaveId })
+      .populate('aeronaveActual', 'matricula modelo tipo')
+      .sort({ categoria: 1, nombre: 1 })
+      .lean(); // .lean() para mejor performance (devuelve POJOs en lugar de documentos Mongoose)
+
+    if (componentes.length === 0) {
+      return res.json({
+        success: true,
+        data: [],
+        estadosMap: {},
+        total: 0
+      });
+    }
+
+    // 2. Obtener TODOS los estados de monitoreo de estos componentes en 1 sola query
+    const componenteIds = componentes.map(c => c._id);
+    const estados = await EstadoMonitoreoComponente.find({
+      componenteId: { $in: componenteIds }
+    })
+    .populate('catalogoControlId', 'descripcionCodigo codigoControl categoria')
+    .lean();
+
+    // 3. Crear mapa de estados por componenteId
+    const estadosMap: Record<string, any[]> = {};
+    estados.forEach(estado => {
+      const componenteId = estado.componenteId.toString();
+      if (!estadosMap[componenteId]) {
+        estadosMap[componenteId] = [];
+      }
+      estadosMap[componenteId].push(estado);
+    });
+
+    logger.info(`✅ [OPTIMIZADO] ${componentes.length} componentes con estados cargados en 2 queries (antes: ${componentes.length + 1})`);
+
+    res.json({
+      success: true,
+      data: componentes,
+      estadosMap, // Mapa de componenteId -> estados[]
+      total: componentes.length,
+      estadosTotal: estados.length
+    });
+
+  } catch (error) {
+    logger.error(`Error al obtener componentes con estados de aeronave ID ${req.params.aeronaveId}:`, error);
     res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
