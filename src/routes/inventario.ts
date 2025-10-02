@@ -9,19 +9,58 @@ import AuditoriaInventario from '../utils/auditoriaInventario';
 
 const router = express.Router();
 
-// GET /api/inventario - Obtener todas las aeronaves
+// CACHE INTERMEDIO PARA ESTADÍSTICAS (5 minutos)
+let inventarioStatsCache: any = null;
+let inventarioStatsCacheTime = 0;
+const STATS_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
+
+// GET /api/inventario - OPTIMIZADO con paginación
 router.get('/', requireAuth, requirePermission('VIEW_INVENTORY'), async (req, res) => {
   try {
-    logger.info('Obteniendo lista de todas las aeronaves');
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 50); // Máximo 50
+    const skip = (page - 1) * limit;
+    
+    const search = req.query.search as string;
+    const tipo = req.query.tipo as string;
+    const estado = req.query.estado as string;
 
-    const aeronaves = await Aeronave.find({}).sort({ createdAt: -1 });
+    // Construir filtros
+    const filtros: any = {};
+    if (search) {
+      filtros.$or = [
+        { matricula: { $regex: search, $options: 'i' } },
+        { modelo: { $regex: search, $options: 'i' } },
+        { fabricante: { $regex: search, $options: 'i' } }
+      ];
+    }
+    if (tipo) filtros.tipo = tipo;
+    if (estado) filtros.estado = estado;
 
-    logger.info(`Se encontraron ${aeronaves.length} aeronaves`);
+    // CONSULTA OPTIMIZADA CON AGREGACIÓN
+    const [aeronaves, total] = await Promise.all([
+      Aeronave.find(filtros)
+        .select('matricula tipo modelo fabricante estado ubicacionActual horasVuelo createdAt') // Solo campos necesarios
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(), // Mejora rendimiento
+      Aeronave.countDocuments(filtros)
+    ]);
+
+    logger.info(`Aeronaves obtenidas: ${aeronaves.length}/${total} (página ${page})`);
 
     res.json({
       success: true,
       data: aeronaves,
-      total: aeronaves.length
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+        hasNext: skip + limit < total,
+        hasPrev: page > 1
+      }
     });
 
   } catch (error) {
@@ -34,29 +73,79 @@ router.get('/', requireAuth, requirePermission('VIEW_INVENTORY'), async (req, re
   }
 });
 
-// GET /api/inventario/stats - Obtener estadísticas de inventario
+// GET /api/inventario/stats - OPTIMIZADO con cache y agregación
 router.get('/stats', requireAuth, requirePermission('VIEW_INVENTORY'), async (req, res) => {
   try {
-    logger.info('Obteniendo estadísticas de inventario');
+    // Verificar cache
+    const now = Date.now();
+    if (inventarioStatsCache && (now - inventarioStatsCacheTime) < STATS_CACHE_TTL) {
+      logger.info('Estadísticas de inventario obtenidas del cache');
+      return res.json({
+        success: true,
+        data: { ...inventarioStatsCache, fromCache: true }
+      });
+    }
 
-    const totalAeronaves = await Aeronave.countDocuments();
-    const helicopteros = await Aeronave.countDocuments({ tipo: 'Helicóptero' });
-    const aviones = await Aeronave.countDocuments({ tipo: 'Avión' });
-    const operativas = await Aeronave.countDocuments({ estado: 'Operativo' });
-    const enMantenimiento = await Aeronave.countDocuments({ estado: 'En Mantenimiento' });
-    const fueraServicio = await Aeronave.countDocuments({ estado: 'Fuera de Servicio' });
+    logger.info('Calculando estadísticas de inventario desde BD');
 
-    const stats = {
-      totalAeronaves,
-      helicopteros,
-      aviones,
-      operativas,
-      enMantenimiento,
-      fueraServicio,
-      porcentajeOperativas: totalAeronaves > 0 ? Math.round((operativas / totalAeronaves) * 100) : 0
+    // AGREGACIÓN OPTIMIZADA - UNA SOLA CONSULTA
+    const [estadisticas] = await Aeronave.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalAeronaves: { $sum: 1 },
+          helicopteros: { 
+            $sum: { $cond: [{ $eq: ['$tipo', 'Helicóptero'] }, 1, 0] } 
+          },
+          aviones: { 
+            $sum: { $cond: [{ $eq: ['$tipo', 'Avión'] }, 1, 0] } 
+          },
+          operativas: { 
+            $sum: { $cond: [{ $eq: ['$estado', 'Operativo'] }, 1, 0] } 
+          },
+          enMantenimiento: { 
+            $sum: { $cond: [{ $eq: ['$estado', 'En Mantenimiento'] }, 1, 0] } 
+          },
+          fueraServicio: { 
+            $sum: { $cond: [{ $eq: ['$estado', 'Fuera de Servicio'] }, 1, 0] } 
+          }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          totalAeronaves: 1,
+          helicopteros: 1,
+          aviones: 1,
+          operativas: 1,
+          enMantenimiento: 1,
+          fueraServicio: 1,
+          porcentajeOperativas: {
+            $cond: [
+              { $gt: ['$totalAeronaves', 0] },
+              { $round: [{ $multiply: [{ $divide: ['$operativas', '$totalAeronaves'] }, 100] }, 0] },
+              0
+            ]
+          }
+        }
+      }
+    ]);
+
+    const stats = estadisticas || {
+      totalAeronaves: 0,
+      helicopteros: 0,
+      aviones: 0,
+      operativas: 0,
+      enMantenimiento: 0,
+      fueraServicio: 0,
+      porcentajeOperativas: 0
     };
 
-    logger.info('Estadísticas de inventario obtenidas:', stats);
+    // Actualizar cache
+    inventarioStatsCache = stats;
+    inventarioStatsCacheTime = now;
+
+    logger.info('Estadísticas de inventario calculadas y guardadas en cache');
 
     res.json({
       success: true,
@@ -532,6 +621,24 @@ router.get('/:id/componentes', requireAuth, async (req, res) => {
       error: process.env.NODE_ENV === 'development' ? error : {}
     });
   }
+});
+
+// Invalidar cache cuando se modifique una aeronave
+const invalidateStatsCache = () => {
+  inventarioStatsCacheTime = 0;
+  inventarioStatsCache = null;
+};
+
+// Hook para invalidar cache en operaciones de escritura
+router.use((req, res, next) => {
+  const originalSend = res.send;
+  res.send = function(data) {
+    if (req.method !== 'GET' && res.statusCode < 400) {
+      invalidateStatsCache();
+    }
+    return originalSend.call(this, data);
+  };
+  next();
 });
 
 export default router;

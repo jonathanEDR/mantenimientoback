@@ -8,5 +8,11 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
-  }
+  },
+  "exclude": [
+    "**/node_modules/**",
+    "**/*-backup.ts",
+    "**/*-new.ts",
+    "**/crear-indices.js"
+  ]
 }

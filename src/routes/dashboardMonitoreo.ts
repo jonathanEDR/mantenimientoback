@@ -3,130 +3,230 @@ import { requireAuth } from '../middleware/clerkAuth';
 import Aeronave from '../models/Aeronave';
 import Componente from '../models/Componente';
 import { EstadoMonitoreoComponente } from '../models/EstadoMonitoreoComponente';
-import { CatalogoControlMonitoreo } from '../models/CatalogoControlMonitoreo';
 
 const router = express.Router();
 
-// Endpoint para obtener monitoreo completo de aeronaves y componentes
+// CACHE PARA DASHBOARD COMPLETO
+let dashboardCache: any = null;
+let dashboardCacheTime = 0;
+const DASHBOARD_CACHE_TTL = 2 * 60 * 1000; // 2 minutos (más frecuente por criticidad)
+
+// Endpoint SUPER OPTIMIZADO para monitoreo completo
 router.get('/monitoreo-completo', requireAuth, async (req, res) => {
   try {
-    // 1. Obtener todas las aeronaves operativas y en mantenimiento
-    const aeronaves = await Aeronave.find({ 
-      estado: { $in: ['Operativo', 'En Mantenimiento'] } 
-    }).lean();
+    // Verificar cache primero
+    const now = Date.now();
+    if (dashboardCache && (now - dashboardCacheTime) < DASHBOARD_CACHE_TTL) {
+      console.log('📦 [DASHBOARD] Usando datos del caché');
+      return res.json({
+        success: true,
+        data: { ...dashboardCache, fromCache: true, cacheAge: now - dashboardCacheTime }
+      });
+    }
 
-    // 2. Procesar cada aeronave y sus componentes
-    const aeronavesProcesadas = await Promise.all(
-      aeronaves.map(async (aeronave: any) => {
-        // Obtener componentes instalados de la aeronave
-        const componentes = await Componente.find({ 
-          aeronaveActual: aeronave._id,
-          estado: 'INSTALADO'
-        }).lean();
+    console.log('🔄 [DASHBOARD] Calculando datos desde BD...');
 
-        // Procesar cada componente
-        const componentesProcesados = await Promise.all(
-          componentes.map(async (componente: any) => {
-            // Obtener estados de monitoreo del componente
-            const estadosMonitoreo = await EstadoMonitoreoComponente.find({
-              componenteId: componente._id 
-            })
-              .populate('catalogoControlId', 'descripcionCodigo horaInicial horaFinal estado')
-              .lean();
+    // PAGINACIÓN PARA DASHBOARD - Solo primeras 20 aeronaves por defecto
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
+    const skip = (page - 1) * limit;
 
-            // Procesar estados de monitoreo
-            const estadosProcesados = estadosMonitoreo.map((estado: any) => {
-              const control = estado.catalogoControlId as any;
-              
-              // Calcular valores actuales - corregir acceso a vidaUtil
-              const vidaUtilHoras = Array.isArray(componente.vidaUtil) 
-                ? componente.vidaUtil.find((v: any) => v.unidad === 'HORAS')
-                : null;
-              const horasComponente = vidaUtilHoras?.acumulado || 0;
-              const valorActual = horasComponente + (estado.offsetInicial || 0);
-              const valorLimite = estado.valorLimite || 0;
-              const progreso = valorLimite > 0 ? Math.round((valorActual / valorLimite) * 100) : 0;
-
-              // Determinar estado
-              let estadoCalculado = 'OK';
-              let alertaActiva = estado.alertaActiva || false;
-
-              if (estado.configuracionOverhaul?.habilitarOverhaul && estado.configuracionOverhaul?.requiereOverhaul) {
-                estadoCalculado = 'OVERHAUL_REQUERIDO';
-                alertaActiva = true;
-              } else if (progreso >= 100) {
-                estadoCalculado = 'VENCIDO';
-                alertaActiva = true;
-              } else if (progreso >= 90) {
-                estadoCalculado = 'PROXIMO';
-                alertaActiva = true;
+    // 1. MEGA AGREGACIÓN OPTIMIZADA - TODO EN UNA CONSULTA
+    const aeronavesProcesadas = await Aeronave.aggregate([
+      // Filtrar aeronaves operativas
+      { 
+        $match: { 
+          estado: { $in: ['Operativo', 'En Mantenimiento'] } 
+        } 
+      },
+      // Paginación a nivel de BD
+      { $skip: skip },
+      { $limit: limit },
+      // Lookup componentes instalados
+      {
+        $lookup: {
+          from: 'componentes',
+          let: { aeronaveId: '$_id' },
+          pipeline: [
+            { 
+              $match: { 
+                $expr: { $eq: ['$aeronaveActual', '$$aeronaveId'] },
+                estado: 'INSTALADO'
+              } 
+            },
+            {
+              $project: {
+                numeroSerie: 1,
+                nombre: 1,
+                categoria: 1,
+                vidaUtil: 1
               }
+            }
+          ],
+          as: 'componentes'
+        }
+      },
+      // Lookup estados de monitoreo en batch
+      {
+        $lookup: {
+          from: 'estadomonitoreocomponentes',
+          let: { componenteIds: '$componentes._id' },
+          pipeline: [
+            {
+              $match: {
+                $expr: { $in: ['$componenteId', '$$componenteIds'] }
+              }
+            },
+            {
+              $lookup: {
+                from: 'catalogocontrolmonitoreos',
+                localField: 'catalogoControlId',
+                foreignField: '_id',
+                as: 'control',
+                pipeline: [
+                  { $project: { descripcionCodigo: 1 } }
+                ]
+              }
+            },
+            {
+              $project: {
+                componenteId: 1,
+                valorActual: 1,
+                valorLimite: 1,
+                alertaActiva: 1,
+                configuracionOverhaul: 1,
+                control: { $arrayElemAt: ['$control', 0] }
+              }
+            }
+          ],
+          as: 'estadosMonitoreo'
+        }
+      },
+      // Procesar datos en la agregación misma
+      {
+        $addFields: {
+          componentesProcesados: {
+            $map: {
+              input: '$componentes',
+              as: 'comp',
+              in: {
+                _id: '$$comp._id',
+                numeroSerie: '$$comp.numeroSerie',
+                nombre: '$$comp.nombre',
+                categoria: '$$comp.categoria',
+                horasAcumuladas: {
+                  $let: {
+                    vars: {
+                      vidaUtilHoras: {
+                        $arrayElemAt: [
+                          {
+                            $filter: {
+                              input: '$$comp.vidaUtil',
+                              cond: { $eq: ['$$this.unidad', 'HORAS'] }
+                            }
+                          },
+                          0
+                        ]
+                      }
+                    },
+                    in: { $ifNull: ['$$vidaUtilHoras.acumulado', 0] }
+                  }
+                },
+                estadosMonitoreo: {
+                  $filter: {
+                    input: '$estadosMonitoreo',
+                    cond: { $eq: ['$$this.componenteId', '$$comp._id'] }
+                  }
+                },
+                alertasActivas: {
+                  $size: {
+                    $filter: {
+                      input: '$estadosMonitoreo',
+                      cond: { 
+                        $and: [
+                          { $eq: ['$$this.componenteId', '$$comp._id'] },
+                          { $eq: ['$$this.alertaActiva', true] }
+                        ]
+                      }
+                    }
+                  }
+                },
+                requiereOverhaul: {
+                  $anyElementTrue: {
+                    $map: {
+                      input: {
+                        $filter: {
+                          input: '$estadosMonitoreo',
+                          cond: { $eq: ['$$this.componenteId', '$$comp._id'] }
+                        }
+                      },
+                      as: 'estado',
+                      in: '$$estado.configuracionOverhaul.requiereOverhaul'
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      // Calcular resumen por aeronave
+      {
+        $addFields: {
+          resumen: {
+            totalComponentes: { $size: '$componentesProcesados' },
+            componentesOK: {
+              $size: {
+                $filter: {
+                  input: '$componentesProcesados',
+                  cond: { $eq: ['$$this.alertasActivas', 0] }
+                }
+              }
+            },
+            componentesProximos: {
+              $size: {
+                $filter: {
+                  input: '$componentesProcesados',
+                  cond: { 
+                    $and: [
+                      { $gt: ['$$this.alertasActivas', 0] },
+                      { $eq: ['$$this.requiereOverhaul', false] }
+                    ]
+                  }
+                }
+              }
+            },
+            componentesOverhaul: {
+              $size: {
+                $filter: {
+                  input: '$componentesProcesados',
+                  cond: { $eq: ['$$this.requiereOverhaul', true] }
+                }
+              }
+            },
+            alertasActivas: {
+              $sum: '$componentesProcesados.alertasActivas'
+            }
+          }
+        }
+      },
+      // Proyección final
+      {
+        $project: {
+          matricula: 1,
+          modelo: 1,
+          horasVuelo: 1,
+          estado: 1,
+          componentes: '$componentesProcesados',
+          resumen: 1
+        }
+      }
+    ]);
 
-              return {
-                _id: estado._id,
-                controlId: control?.descripcionCodigo || 'N/A',
-                descripcionControl: control?.descripcionCodigo || 'Sin descripción',
-                valorActual,
-                valorLimite,
-                unidad: estado.unidad || 'HORAS',
-                estado: estadoCalculado,
-                progreso: Math.min(progreso, 100),
-                criticidad: estado.configuracionPersonalizada?.criticidad || 'MEDIA',
-                alertaActiva,
-                configuracionOverhaul: estado.configuracionOverhaul
-              };
-            });
-
-            // Calcular métricas del componente
-            const alertasActivas = estadosProcesados.filter((e: any) => e.alertaActiva).length;
-            const requiereOverhaul = estadosProcesados.some((e: any) => e.estado === 'OVERHAUL_REQUERIDO');
-
-            // Buscar vida útil en horas del componente
-            const vidaUtilHoras = Array.isArray(componente.vidaUtil) 
-              ? componente.vidaUtil.find((v: any) => v.unidad === 'HORAS')
-              : null;
-            const horasAcumuladas = vidaUtilHoras?.acumulado || 0;
-
-            return {
-              _id: componente._id,
-              numeroSerie: componente.numeroSerie,
-              nombre: componente.nombre,
-              categoria: componente.categoria,
-              horasAcumuladas,
-              estadosMonitoreo: estadosProcesados,
-              alertasActivas,
-              requiereOverhaul
-            };
-          })
-        );
-
-        // Calcular resumen de la aeronave
-        const resumen = {
-          totalComponentes: componentesProcesados.length,
-          componentesOK: componentesProcesados.filter((c: any) => 
-            c.estadosMonitoreo.every((e: any) => e.estado === 'OK')
-          ).length,
-          componentesProximos: componentesProcesados.filter((c: any) => 
-            c.estadosMonitoreo.some((e: any) => e.estado === 'PROXIMO')
-          ).length,
-          componentesVencidos: componentesProcesados.filter((c: any) => 
-            c.estadosMonitoreo.some((e: any) => e.estado === 'VENCIDO')
-          ).length,
-          componentesOverhaul: componentesProcesados.filter((c: any) => c.requiereOverhaul).length,
-          alertasActivas: componentesProcesados.reduce((sum: number, c: any) => sum + c.alertasActivas, 0)
-        };
-
-        return {
-          _id: aeronave._id,
-          matricula: aeronave.matricula,
-          modelo: aeronave.modelo,
-          horasVuelo: aeronave.horasVuelo || 0,
-          estado: aeronave.estado,
-          componentes: componentesProcesados,
-          resumen
-        };
-      })
-    );
+    // 2. Calcular totales para paginación
+    const totalAeronaves = await Aeronave.countDocuments({ 
+      estado: { $in: ['Operativo', 'En Mantenimiento'] } 
+    });
 
     // 3. Calcular resumen general
     const resumenGeneral = {
@@ -136,96 +236,98 @@ router.get('/monitoreo-completo', requireAuth, async (req, res) => {
       componentesRequierenOverhaul: aeronavesProcesadas.reduce((sum: number, a: any) => sum + a.resumen.componentesOverhaul, 0)
     };
 
+    const result = {
+      aeronaves: aeronavesProcesadas,
+      resumenGeneral,
+      pagination: {
+        page,
+        limit,
+        total: totalAeronaves,
+        pages: Math.ceil(totalAeronaves / limit),
+        hasNext: skip + limit < totalAeronaves,
+        hasPrev: page > 1
+      }
+    };
+
+    // Actualizar cache
+    dashboardCache = result;
+    dashboardCacheTime = now;
+
+    console.log(`✅ [DASHBOARD] Datos calculados y guardados en caché: ${aeronavesProcesadas.length} aeronaves, ${resumenGeneral.totalComponentes} componentes`);
+
     res.json({
       success: true,
-      data: {
-        aeronaves: aeronavesProcesadas,
-        resumenGeneral
-      }
+      data: result
     });
 
   } catch (error) {
     console.error('❌ [DASHBOARD-MONITOREO] Error:', error);
     res.status(500).json({
       success: false,
-      message: 'Error al obtener datos de monitoreo completo',
-      error: error instanceof Error ? error.message : 'Error desconocido'
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? (error as Error).message : undefined
     });
   }
 });
 
-// Endpoint para actualizar estado específico de componente
-router.patch('/componente/:componenteId/estado/:estadoId', requireAuth, async (req, res) => {
+// Endpoint ligero para resumen rápido (sin detalles de componentes)
+router.get('/resumen-rapido', requireAuth, async (req, res) => {
   try {
-    const { componenteId, estadoId } = req.params;
-    const actualizaciones = req.body;
-
-    const estadoActualizado = await EstadoMonitoreoComponente.findByIdAndUpdate(
-      estadoId,
-      { $set: actualizaciones },
-      { new: true, runValidators: true }
-    );
-
-    if (!estadoActualizado) {
-      return res.status(404).json({
-        success: false,
-        message: 'Estado de monitoreo no encontrado'
-      });
-    }
-
-    res.json({
-      success: true,
-      data: estadoActualizado
-    });
-
-  } catch (error) {
-    console.error('❌ [DASHBOARD-MONITOREO] Error al actualizar estado:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error al actualizar estado de monitoreo',
-      error: error instanceof Error ? error.message : 'Error desconocido'
-    });
-  }
-});
-
-// Endpoint para completar overhaul de componente
-router.post('/componente/:componenteId/completar-overhaul', requireAuth, async (req, res) => {
-  try {
-    const { componenteId } = req.params;
-    const { estadoIds, observaciones } = req.body;
-
-    // Actualizar todos los estados que requieren overhaul
-    const actualizaciones = await Promise.all(
-      estadoIds.map(async (estadoId: string) => {
-        return await EstadoMonitoreoComponente.findByIdAndUpdate(
-          estadoId,
-          {
-            $set: {
-              'configuracionOverhaul.requiereOverhaul': false,
-              'configuracionOverhaul.cicloActual': 0,
-              'fechaUltimaRevision': new Date(),
-              observaciones: observaciones || `Overhaul completado el ${new Date().toLocaleString()}`
-            }
+    const [resumen] = await Aeronave.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalAeronaves: { $sum: 1 },
+          aeronaveOperativas: {
+            $sum: { $cond: [{ $eq: ['$estado', 'Operativo'] }, 1, 0] }
           },
-          { new: true }
-        );
-      })
-    );
+          aeronaveEnMantenimiento: {
+            $sum: { $cond: [{ $eq: ['$estado', 'En Mantenimiento'] }, 1, 0] }
+          }
+        }
+      }
+    ]);
+
+    // Componentes con alertas
+    const componentesConAlertas = await Componente.countDocuments({ 
+      alertasActivas: true,
+      estado: 'INSTALADO'
+    });
 
     res.json({
       success: true,
-      data: actualizaciones,
-      message: 'Overhaul completado correctamente'
+      data: {
+        ...(resumen || { totalAeronaves: 0, aeronaveOperativas: 0, aeronaveEnMantenimiento: 0 }),
+        componentesConAlertas
+      }
     });
 
   } catch (error) {
-    console.error('❌ [DASHBOARD-MONITOREO] Error al completar overhaul:', error);
+    console.error('Error en resumen rápido:', error);
     res.status(500).json({
       success: false,
-      message: 'Error al completar overhaul',
-      error: error instanceof Error ? error.message : 'Error desconocido'
+      message: 'Error interno del servidor'
     });
   }
+});
+
+// Invalidar cache del dashboard
+const invalidateDashboardCache = () => {
+  dashboardCacheTime = 0;
+  dashboardCache = null;
+  console.log('🗑️ [DASHBOARD] Cache invalidado');
+};
+
+// Middleware para invalidar cache en operaciones de escritura
+router.use((req, res, next) => {
+  const originalSend = res.send;
+  res.send = function(data) {
+    if (req.method !== 'GET' && res.statusCode < 400) {
+      invalidateDashboardCache();
+    }
+    return originalSend.call(this, data);
+  };
+  next();
 });
 
 export default router;

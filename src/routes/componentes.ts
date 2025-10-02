@@ -7,12 +7,23 @@ import logger from '../utils/logger';
 
 const router = express.Router();
 
-// GET /api/mantenimiento/componentes - Obtener todos los componentes
+// CACHE PARA ESTADÍSTICAS DE COMPONENTES
+let componentesStatsCache: any = null;
+let componentesStatsCacheTime = 0;
+const STATS_CACHE_TTL = 5 * 60 * 1000; // 5 minutos
+
+// GET /api/mantenimiento/componentes - OPTIMIZADO
 router.get('/', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req, res) => {
   try {
-    const { categoria, estado, aeronave, alertas } = req.query;
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
+    const skip = (page - 1) * limit;
     
-    logger.info('Obteniendo lista de componentes', { filtros: { categoria, estado, aeronave, alertas } });
+    const { categoria, estado, aeronave, alertas, search } = req.query;
+    
+    logger.info('Obteniendo componentes con paginación', { 
+      page, limit, filtros: { categoria, estado, aeronave, alertas, search } 
+    });
 
     // Construir filtros dinámicamente
     const filtros: any = {};
@@ -20,17 +31,39 @@ router.get('/', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req, r
     if (estado) filtros.estado = estado;
     if (aeronave) filtros.aeronaveActual = aeronave;
     if (alertas === 'true') filtros.alertasActivas = true;
+    if (search) {
+      filtros.$or = [
+        { nombre: { $regex: search, $options: 'i' } },
+        { numeroSerie: { $regex: search, $options: 'i' } },
+        { fabricante: { $regex: search, $options: 'i' } }
+      ];
+    }
 
-    const componentes = await Componente.find(filtros)
-      .populate('aeronaveActual', 'matricula modelo')
-      .sort({ createdAt: -1 });
+    // CONSULTA OPTIMIZADA CON AGREGACIÓN Y PAGINACIÓN
+    const [componentes, total] = await Promise.all([
+      Componente.find(filtros)
+        .populate('aeronaveActual', 'matricula modelo')
+        .select('nombre numeroSerie categoria estado fabricante fechaInstalacion alertasActivas vidaUtil')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+      Componente.countDocuments(filtros)
+    ]);
 
-    logger.info(`Se encontraron ${componentes.length} componentes`);
+    logger.info(`Componentes obtenidos: ${componentes.length}/${total} (página ${page})`);
 
     res.json({
       success: true,
       data: componentes,
-      total: componentes.length
+      pagination: {
+        page,
+        limit,
+        total,
+        pages: Math.ceil(total / limit),
+        hasNext: skip + limit < total,
+        hasPrev: page > 1
+      }
     });
 
   } catch (error) {
@@ -43,46 +76,89 @@ router.get('/', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req, r
   }
 });
 
-// GET /api/mantenimiento/componentes/stats - Estadísticas de componentes
+// GET /api/mantenimiento/componentes/stats - SUPER OPTIMIZADO
 router.get('/stats', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req, res) => {
   try {
-    logger.info('Obteniendo estadísticas de componentes');
+    // Verificar cache
+    const now = Date.now();
+    if (componentesStatsCache && (now - componentesStatsCacheTime) < STATS_CACHE_TTL) {
+      logger.info('Estadísticas de componentes obtenidas del cache');
+      return res.json({
+        success: true,
+        data: { ...componentesStatsCache, fromCache: true }
+      });
+    }
 
-    const [
-      totalComponentes,
-      componentesInstalados,
-      componentesEnAlmacen,
-      componentesEnReparacion,
-      componentesConAlertas,
-      componentesPorCategoria
-    ] = await Promise.all([
-      Componente.countDocuments(),
-      Componente.countDocuments({ estado: EstadoComponente.INSTALADO }),
-      Componente.countDocuments({ estado: EstadoComponente.EN_ALMACEN }),
-      Componente.countDocuments({ estado: EstadoComponente.EN_REPARACION }),
-      Componente.countDocuments({ alertasActivas: true }),
-      Componente.aggregate([
-        {
-          $group: {
-            _id: '$categoria',
-            cantidad: { $sum: 1 }
+    logger.info('Calculando estadísticas de componentes desde BD');
+
+    // AGREGACIÓN MEGA OPTIMIZADA - UNA SOLA CONSULTA
+    const [estadisticas] = await Componente.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalComponentes: { $sum: 1 },
+          componentesInstalados: { 
+            $sum: { $cond: [{ $eq: ['$estado', EstadoComponente.INSTALADO] }, 1, 0] } 
+          },
+          componentesEnAlmacen: { 
+            $sum: { $cond: [{ $eq: ['$estado', EstadoComponente.EN_ALMACEN] }, 1, 0] } 
+          },
+          componentesEnReparacion: { 
+            $sum: { $cond: [{ $eq: ['$estado', EstadoComponente.EN_REPARACION] }, 1, 0] } 
+          },
+          componentesConAlertas: { 
+            $sum: { $cond: ['$alertasActivas', 1, 0] } 
           }
-        },
-        { $sort: { cantidad: -1 } }
-      ])
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          totalComponentes: 1,
+          componentesInstalados: 1,
+          componentesEnAlmacen: 1,
+          componentesEnReparacion: 1,
+          componentesConAlertas: 1,
+          porcentajeInstalados: {
+            $cond: [
+              { $gt: ['$totalComponentes', 0] },
+              { $round: [{ $multiply: [{ $divide: ['$componentesInstalados', '$totalComponentes'] }, 100] }, 0] },
+              0
+            ]
+          }
+        }
+      }
+    ]);
+
+    // Calcular distribución por categoría por separado (más eficiente)
+    const distribucionPorCategoria = await Componente.aggregate([
+      {
+        $group: {
+          _id: '$categoria',
+          cantidad: { $sum: 1 }
+        }
+      },
+      { $sort: { cantidad: -1 } },
+      { $limit: 10 } // Limitar a top 10 categorías
     ]);
 
     const stats = {
-      totalComponentes,
-      componentesInstalados,
-      componentesEnAlmacen,
-      componentesEnReparacion,
-      componentesConAlertas,
-      porcentajeInstalados: totalComponentes > 0 ? Math.round((componentesInstalados / totalComponentes) * 100) : 0,
-      distribucionPorCategoria: componentesPorCategoria
+      ...(estadisticas || {
+        totalComponentes: 0,
+        componentesInstalados: 0,
+        componentesEnAlmacen: 0,
+        componentesEnReparacion: 0,
+        componentesConAlertas: 0,
+        porcentajeInstalados: 0
+      }),
+      distribucionPorCategoria
     };
 
-    logger.info('Estadísticas de componentes obtenidas:', stats);
+    // Actualizar cache
+    componentesStatsCache = stats;
+    componentesStatsCacheTime = now;
+
+    logger.info('Estadísticas de componentes calculadas y guardadas en cache');
 
     res.json({
       success: true,
@@ -563,6 +639,109 @@ router.delete('/:id', requireAuth, requirePermission('DELETE_COMPONENTS'), async
       error: process.env.NODE_ENV === 'development' ? error : {}
     });
   }
+});
+
+// ENDPOINT BATCH PARA ESTADOS DE MONITOREO - NUEVA OPTIMIZACIÓN CRÍTICA
+router.get('/estados-monitoreo/aeronave/:aeronaveId', requireAuth, async (req, res) => {
+  try {
+    const { aeronaveId } = req.params;
+    
+    logger.info(`Obteniendo estados de monitoreo en batch para aeronave ${aeronaveId}`);
+
+    // MEGA OPTIMIZACIÓN: Una sola consulta para todos los estados
+    const estadosMonitoreo = await EstadoMonitoreoComponente.aggregate([
+      // 1. Buscar componentes de la aeronave
+      {
+        $lookup: {
+          from: 'componentes',
+          localField: 'componenteId',
+          foreignField: '_id',
+          as: 'componente',
+          pipeline: [
+            { $match: { aeronaveActual: aeronaveId } },
+            { $project: { _id: 1, numeroSerie: 1, nombre: 1 } }
+          ]
+        }
+      },
+      // 2. Filtrar solo estados de componentes de esta aeronave
+      { $match: { componente: { $ne: [] } } },
+      // 3. Poblar información del catálogo de control
+      {
+        $lookup: {
+          from: 'catalogocontrolmonitoreos',
+          localField: 'catalogoControlId',
+          foreignField: '_id',
+          as: 'catalogoControl',
+          pipeline: [
+            { $project: { descripcionCodigo: 1, horaInicial: 1, horaFinal: 1 } }
+          ]
+        }
+      },
+      // 4. Proyectar campos necesarios
+      {
+        $project: {
+          componenteId: 1,
+          valorActual: 1,
+          valorLimite: 1,
+          alertaActiva: 1,
+          fechaProximaRevision: 1,
+          configuracionOverhaul: 1,
+          catalogoControl: { $arrayElemAt: ['$catalogoControl', 0] },
+          componente: { $arrayElemAt: ['$componente', 0] }
+        }
+      },
+      // 5. Agrupar por componente
+      {
+        $group: {
+          _id: '$componenteId',
+          estados: { $push: '$$ROOT' },
+          totalEstados: { $sum: 1 },
+          alertasActivas: { 
+            $sum: { $cond: ['$alertaActiva', 1, 0] } 
+          }
+        }
+      }
+    ]);
+
+    // Convertir a formato esperado por el frontend
+    const estadosPorComponente = estadosMonitoreo.reduce((acc: any, item: any) => {
+      acc[item._id.toString()] = item.estados;
+      return acc;
+    }, {});
+
+    logger.info(`Estados de monitoreo batch obtenidos para ${Object.keys(estadosPorComponente).length} componentes`);
+
+    res.json({
+      success: true,
+      data: estadosPorComponente,
+      totalComponentes: Object.keys(estadosPorComponente).length
+    });
+
+  } catch (error) {
+    logger.error('Error al obtener estados de monitoreo en batch:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor'
+    });
+  }
+});
+
+// Invalidar cache
+const invalidateStatsCache = () => {
+  componentesStatsCacheTime = 0;
+  componentesStatsCache = null;
+};
+
+// Middleware para invalidar cache en operaciones de escritura
+router.use((req, res, next) => {
+  const originalSend = res.send;
+  res.send = function(data) {
+    if (req.method !== 'GET' && res.statusCode < 400) {
+      invalidateStatsCache();
+    }
+    return originalSend.call(this, data);
+  };
+  next();
 });
 
 export default router;
