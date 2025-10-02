@@ -30,6 +30,7 @@
     "jsonwebtoken": "^9.0.0",
     "mongoose": "^7.0.0",
     "morgan": "^1.10.0",
+    "svix": "^1.76.1",
     "winston": "^3.9.0",
     "zod": "^4.0.0"
   },

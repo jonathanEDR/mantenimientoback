@@ -17,28 +17,33 @@ const app = express();
 app.use(helmet());
 app.use(compression());
 
-// Configuración de CORS más robusta
+// Configuración de CORS optimizada para producción
 const corsOptions = {
   origin: (origin: any, callback: any) => {
     const corsOriginEnv = process.env.CORS_ORIGIN || 'http://localhost:5173';
-    const allowedOrigins = corsOriginEnv.split(',').map(o => o.trim().replace(/\/$/, '')); // Remover barras finales
+    const allowedOrigins = corsOriginEnv.split(',').map(o => o.trim().replace(/\/$/, ''));
     
-    // Permitir requests sin origin (como desde Postman o apps móviles)
-    if (!origin) return callback(null, true);
+    // Permitir requests sin origin en desarrollo (Postman, apps móviles)
+    if (!origin && process.env.NODE_ENV === 'development') {
+      return callback(null, true);
+    }
     
-    // Normalizar origin (remover barra final)
-    const normalizedOrigin = origin.replace(/\/$/, '');
+    // Normalizar origin
+    const normalizedOrigin = origin?.replace(/\/$/, '');
     
-    if (allowedOrigins.includes(normalizedOrigin) || process.env.NODE_ENV === 'development') {
+    if (allowedOrigins.includes(normalizedOrigin)) {
       callback(null, true);
     } else {
-      console.warn(`CORS: Origin no permitido: ${origin}. Origins permitidos: ${allowedOrigins.join(', ')}`);
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn(`CORS: Origin no permitido: ${origin}`);
+      }
       callback(new Error('No permitido por CORS'));
     }
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  maxAge: 86400 // Cache preflight requests for 24 hours
 };
 
 app.use(cors(corsOptions));

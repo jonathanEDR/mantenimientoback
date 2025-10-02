@@ -16,6 +16,8 @@ services:
         scope: PRIVATE
       - key: CLERK_ISSUER
         value: https://well-marmot-74.clerk.accounts.dev
+      - key: CLERK_WEBHOOK_SECRET
+        scope: PRIVATE
       - key: JWT_SECRET
         scope: PRIVATE
       - key: CORS_ORIGIN

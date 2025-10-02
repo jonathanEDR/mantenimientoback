@@ -1,5 +1,6 @@
 import express from 'express';
 import { z } from 'zod';
+import { Webhook } from 'svix';
 import { requireAuth } from '../middleware/clerkAuth';
 import User, { UserRole } from '../models/User';
 
@@ -17,8 +18,6 @@ const registerSchema = z.object({
 router.post('/register', async (req, res) => {
   try {
     const rawBody = (req as any).rawBody ?? req.body;
-    console.log('[auth] POST /register raw body type:', typeof rawBody);
-    console.log('[auth] POST /register raw preview:', String(rawBody).slice(0, 300));
 
     // Attempt to parse JSON safely. If it's already parsed by upstream middleware, use it.
   let parsedBody: any = rawBody;
@@ -35,7 +34,6 @@ router.post('/register', async (req, res) => {
 
     // Verificar si el usuario ya existe
   const existingUser = await User.findOne({ clerkId });
-  console.log('[auth] existingUser:', !!existingUser);
     if (existingUser) {
       return res.status(200).json({
         message: 'Usuario ya registrado',
@@ -52,7 +50,6 @@ router.post('/register', async (req, res) => {
     });
 
   await user.save();
-  console.log('[auth] user saved with _id:', user._id);
     res.status(201).json({
       message: 'Usuario registrado exitosamente',
       user
@@ -84,41 +81,172 @@ router.get('/me', requireAuth, async (req, res) => {
 });
 
 // Webhook endpoint for Clerk (server-to-server) - recommended for reliable sync
-router.post('/webhook', express.json(), async (req, res) => {
+router.post('/webhook', express.raw({ type: 'application/json' }), async (req, res) => {
   try {
-    console.log('[auth:webhook] Received webhook:', req.headers['x-clerk-signature'] ? 'with-signature' : 'no-signature');
-    const event = req.body;
-    console.log('[auth:webhook] event.type:', event?.type);
-
-    // Basic handling for user.created event
-    if (event?.type === 'user.created' && event?.data) {
-      const payload = event.data;
-      const clerkId = payload.id || payload.user?.id || payload.user_id;
-      const email = payload.email || payload.primary_email_address || payload.user?.primary_email_address?.email_address;
-      const name = payload.full_name || `${payload.first_name || ''} ${payload.last_name || ''}`.trim() || payload.user?.first_name || payload.user?.last_name;
-
-      if (!clerkId) {
-        console.warn('[auth:webhook] user.created missing clerkId, skipping');
-        return res.status(400).json({ error: 'missing clerkId' });
-      }
-
-      const existing = await User.findOne({ clerkId });
-      if (existing) {
-        console.log('[auth:webhook] User already exists, skipping save for', clerkId);
-        return res.status(200).json({ message: 'already_exists' });
-      }
-
-      const user = new User({ clerkId, name: name || 'Usuario', email, role: UserRole.ESPECIALISTA });
-      await user.save();
-      console.log('[auth:webhook] User created via webhook:', user._id.toString());
-      return res.status(201).json({ message: 'created', user });
+    const WEBHOOK_SECRET = process.env.CLERK_WEBHOOK_SECRET;
+    
+    if (!WEBHOOK_SECRET) {
+      console.error('[auth:webhook] CLERK_WEBHOOK_SECRET not configured');
+      return res.status(500).json({ error: 'Webhook secret not configured' });
     }
 
-    res.status(200).json({ message: 'ignored' });
+    // Verify webhook signature for security using Svix
+    const svix_id = req.headers['svix-id'] as string;
+    const svix_timestamp = req.headers['svix-timestamp'] as string;
+    const svix_signature = req.headers['svix-signature'] as string;
+
+    if (!svix_id || !svix_timestamp || !svix_signature) {
+      return res.status(400).json({ error: 'Missing svix headers' });
+    }
+
+    const wh = new Webhook(WEBHOOK_SECRET);
+    let event: any;
+
+    try {
+      event = wh.verify(req.body, {
+        'svix-id': svix_id,
+        'svix-timestamp': svix_timestamp,
+        'svix-signature': svix_signature,
+      });
+    } catch (err) {
+      console.error('[auth:webhook] Webhook verification failed');
+      return res.status(400).json({ error: 'Webhook verification failed' });
+    }
+
+    // Handle different webhook events
+    const { type, data } = event;
+
+    switch (type) {
+      case 'user.created':
+        await handleUserCreated(data);
+        break;
+      case 'user.updated':
+        await handleUserUpdated(data);
+        break;
+      case 'user.deleted':
+        await handleUserDeleted(data);
+        break;
+      default:
+        if (process.env.NODE_ENV !== 'production') {
+          console.log(`[auth:webhook] Unhandled event type: ${type}`);
+        }
+    }
+
+    return res.status(200).json({ message: 'success' });
   } catch (err) {
-    console.error('[auth:webhook] Error processing webhook:', err);
-    res.status(500).json({ error: 'internal_error' });
+    if (process.env.NODE_ENV !== 'production') {
+      console.error('[auth:webhook] Error processing webhook:', (err as Error).message);
+    }
+    return res.status(500).json({ error: 'internal_error' });
   }
 });
+
+// Handler functions for different webhook events
+async function handleUserCreated(userData: any) {
+  try {
+    const clerkId = userData.id;
+    const email = userData.email_addresses?.[0]?.email_address || '';
+    const firstName = userData.first_name || '';
+    const lastName = userData.last_name || '';
+    const name = userData.full_name || `${firstName} ${lastName}`.trim() || 'Usuario';
+
+    if (!clerkId) {
+      throw new Error('Missing clerkId in user.created event');
+    }
+
+    // Check if user already exists
+    const existing = await User.findOne({ clerkId });
+    if (existing) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.log('[auth:webhook] User already exists:', clerkId);
+      }
+      return;
+    }
+
+    // Create new user
+    const user = new User({
+      clerkId,
+      name,
+      email,
+      role: UserRole.ESPECIALISTA,
+      isActive: true,
+      createdBy: 'webhook'
+    });
+
+    await user.save();
+    
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[auth:webhook] User created successfully:', clerkId);
+    }
+  } catch (error) {
+    console.error('[auth:webhook] Error in handleUserCreated:', (error as Error).message);
+    throw error;
+  }
+}
+
+async function handleUserUpdated(userData: any) {
+  try {
+    const clerkId = userData.id;
+    const email = userData.email_addresses?.[0]?.email_address || '';
+    const firstName = userData.first_name || '';
+    const lastName = userData.last_name || '';
+    const name = userData.full_name || `${firstName} ${lastName}`.trim() || 'Usuario';
+
+    if (!clerkId) {
+      throw new Error('Missing clerkId in user.updated event');
+    }
+
+    // Update existing user
+    const user = await User.findOneAndUpdate(
+      { clerkId },
+      { 
+        name, 
+        email,
+        updatedBy: 'webhook'
+      },
+      { new: true }
+    );
+
+    if (!user) {
+      // If user doesn't exist, create it
+      await handleUserCreated(userData);
+      return;
+    }
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[auth:webhook] User updated successfully:', clerkId);
+    }
+  } catch (error) {
+    console.error('[auth:webhook] Error in handleUserUpdated:', (error as Error).message);
+    throw error;
+  }
+}
+
+async function handleUserDeleted(userData: any) {
+  try {
+    const clerkId = userData.id;
+
+    if (!clerkId) {
+      throw new Error('Missing clerkId in user.deleted event');
+    }
+
+    // Soft delete - mark as inactive instead of removing
+    const user = await User.findOneAndUpdate(
+      { clerkId },
+      { 
+        isActive: false,
+        updatedBy: 'webhook'
+      },
+      { new: true }
+    );
+
+    if (process.env.NODE_ENV !== 'production') {
+      console.log('[auth:webhook] User deactivated successfully:', clerkId);
+    }
+  } catch (error) {
+    console.error('[auth:webhook] Error in handleUserDeleted:', (error as Error).message);
+    throw error;
+  }
+}
 
 export default router;
