@@ -1,6 +1,6 @@
 import express from 'express';
 import Componente, { ComponenteCategoria, EstadoComponente } from '../models/Componente';
-import EstadoMonitoreoComponente from '../models/EstadoMonitoreoComponente';
+import { EstadoMonitoreoComponente } from '../models/EstadoMonitoreoComponente';
 import { requireAuth } from '../middleware/clerkAuth';
 import { requirePermission } from '../middleware/roleAuth';
 import logger from '../utils/logger';
@@ -207,7 +207,7 @@ router.get('/aeronave/id/:aeronaveId/con-estados', requireAuth, requirePermissio
 
     // 3. Crear mapa de estados por componenteId
     const estadosMap: Record<string, any[]> = {};
-    estados.forEach(estado => {
+    estados.forEach((estado: any) => {
       const componenteId = estado.componenteId.toString();
       if (!estadosMap[componenteId]) {
         estadosMap[componenteId] = [];
