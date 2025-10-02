@@ -20,24 +20,56 @@ app.use(compression());
 // Configuración de CORS optimizada para producción
 const corsOptions = {
   origin: (origin: any, callback: any) => {
+    // Lista de orígenes permitidos
     const corsOriginEnv = process.env.CORS_ORIGIN || 'http://localhost:5173';
     const allowedOrigins = corsOriginEnv.split(',').map(o => o.trim().replace(/\/$/, ''));
-    
-    // Permitir requests sin origin en desarrollo (Postman, apps móviles)
-    if (!origin && process.env.NODE_ENV === 'development') {
+
+    // Log para debugging en producción
+    logger.info(`CORS request from origin: ${origin || 'no-origin'}`);
+    logger.info(`Allowed origins: ${allowedOrigins.join(', ')}`);
+
+    // Permitir requests sin origin (servidor a servidor, Postman, etc.)
+    if (!origin) {
+      logger.info('Request without origin - allowing');
       return callback(null, true);
     }
-    
-    // Normalizar origin
-    const normalizedOrigin = origin?.replace(/\/$/, '');
-    
-    if (allowedOrigins.includes(normalizedOrigin)) {
+
+    // Normalizar origin (quitar trailing slash)
+    const normalizedOrigin = origin.replace(/\/$/, '');
+
+    // Verificar si el origin está permitido
+    const isAllowed = allowedOrigins.some(allowedOrigin => {
+      // Verificación exacta
+      if (allowedOrigin === normalizedOrigin) return true;
+      
+      // Verificación para dominios de Vercel (permite subdominios)
+      if (allowedOrigin.includes('vercel.app') || normalizedOrigin.includes('vercel.app')) {
+        const allowedDomain = allowedOrigin.replace(/^https?:\/\//, '');
+        const requestDomain = normalizedOrigin.replace(/^https?:\/\//, '');
+        
+        // Permitir variaciones comunes de dominios de Vercel
+        if (allowedDomain.includes('mantentodb') && requestDomain.includes('mantentodb')) return true;
+        if (allowedDomain.includes('mantenientodb') && requestDomain.includes('mantenientodb')) return true;
+        if (allowedDomain === requestDomain) return true;
+      }
+      
+      return false;
+    });
+
+    if (isAllowed) {
+      logger.info(`Origin ${normalizedOrigin} is allowed`);
       callback(null, true);
     } else {
+      logger.warn(`CORS: Origin no permitido: ${origin}`);
+      logger.warn(`Expected one of: ${allowedOrigins.join(', ')}`);
+      
+      // En desarrollo, ser más permisivo
       if (process.env.NODE_ENV !== 'production') {
-        console.warn(`CORS: Origin no permitido: ${origin}`);
+        logger.info('Development mode - allowing origin');
+        callback(null, true);
+      } else {
+        callback(new Error('No permitido por CORS'));
       }
-      callback(new Error('No permitido por CORS'));
     }
   },
   credentials: true,
