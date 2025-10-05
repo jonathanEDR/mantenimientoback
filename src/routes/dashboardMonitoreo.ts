@@ -11,22 +11,23 @@ let dashboardCache: any = null;
 let dashboardCacheTime = 0;
 const DASHBOARD_CACHE_TTL = 2 * 60 * 1000; // 2 minutos (más frecuente por criticidad)
 
+// Invalidar cache inmediatamente para forzar recálculo
+dashboardCache = null;
+dashboardCacheTime = 0;
+
 // Endpoint SUPER OPTIMIZADO para monitoreo completo
 router.get('/monitoreo-completo', requireAuth, async (req, res) => {
   try {
     // Verificar cache primero
     const now = Date.now();
     if (dashboardCache && (now - dashboardCacheTime) < DASHBOARD_CACHE_TTL) {
-      console.log('📦 [DASHBOARD] Usando datos del caché');
       return res.json({
         success: true,
         data: { ...dashboardCache, fromCache: true, cacheAge: now - dashboardCacheTime }
       });
     }
 
-    console.log('🔄 [DASHBOARD] Calculando datos desde BD...');
-
-    // PAGINACIÓN PARA DASHBOARD - Solo primeras 20 aeronaves por defecto
+        // PAGINACIÓN PARA DASHBOARD - Solo primeras 20 aeronaves por defecto
     const page = parseInt(req.query.page as string) || 1;
     const limit = Math.min(parseInt(req.query.limit as string) || 20, 50);
     const skip = (page - 1) * limit;
@@ -69,7 +70,7 @@ router.get('/monitoreo-completo', requireAuth, async (req, res) => {
       // Lookup estados de monitoreo en batch
       {
         $lookup: {
-          from: 'estadomonitoreocomponentes',
+          from: 'estadosMonitoreoComponente',
           let: { componenteIds: '$componentes._id' },
           pipeline: [
             {
@@ -79,7 +80,7 @@ router.get('/monitoreo-completo', requireAuth, async (req, res) => {
             },
             {
               $lookup: {
-                from: 'catalogocontrolmonitoreos',
+                from: 'catalogoControlMonitoreo',
                 localField: 'catalogoControlId',
                 foreignField: '_id',
                 as: 'control',
@@ -253,8 +254,6 @@ router.get('/monitoreo-completo', requireAuth, async (req, res) => {
     dashboardCache = result;
     dashboardCacheTime = now;
 
-    console.log(`✅ [DASHBOARD] Datos calculados y guardados en caché: ${aeronavesProcesadas.length} aeronaves, ${resumenGeneral.totalComponentes} componentes`);
-
     res.json({
       success: true,
       data: result
@@ -315,7 +314,6 @@ router.get('/resumen-rapido', requireAuth, async (req, res) => {
 const invalidateDashboardCache = () => {
   dashboardCacheTime = 0;
   dashboardCache = null;
-  console.log('🗑️ [DASHBOARD] Cache invalidado');
 };
 
 // Middleware para invalidar cache en operaciones de escritura
