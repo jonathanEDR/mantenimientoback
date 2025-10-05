@@ -71,16 +71,10 @@ export class PermissionService {
   static async getUserPermissionInfo(clerkId: string) {
     try {
       // Buscar usuario directamente
-      let user = await User.findOne({ clerkId });
-      
+      const user = await User.findOne({ clerkId });
+
       if (!user) {
         throw new Error('Usuario no encontrado');
-      }
-
-      // Migración automática y silenciosa: asegurar que usuarios existentes tengan isActive
-      if (user.isActive === undefined || user.isActive === null) {
-        user.isActive = true;
-        await user.save();
       }
 
       // Verificar que el usuario esté activo

@@ -94,23 +94,16 @@ export const requireRole = (allowedRoles: UserRole[]) => {
         });
       }
 
-      // Buscar el usuario en la base de datos con manejo de compatibilidad
-      let user = await User.findOne({ clerkId: userId });
-      
+      // Buscar el usuario en la base de datos
+      const user = await User.findOne({ clerkId: userId });
+
       if (!user) {
         logger.warn(`[roleAuth:${requestId}] Usuario no encontrado: ${userId} para ${req.path}`);
-        return res.status(404).json({ 
+        return res.status(404).json({
           error: 'Usuario no encontrado',
           code: 'USER_NOT_FOUND',
           timestamp: new Date().toISOString()
         });
-      }
-
-      // Migración automática: asegurar que usuarios existentes tengan isActive
-      if (user.isActive === undefined || user.isActive === null) {
-        user.isActive = true;
-        await user.save();
-        logger.info(`[roleAuth:${requestId}] Usuario ${user.email} migrado con isActive: true`);
       }
 
       // Verificar si el usuario está activo

@@ -24,13 +24,11 @@ const corsOptions = {
     const corsOriginEnv = process.env.CORS_ORIGIN || 'http://localhost:5173';
     const allowedOrigins = corsOriginEnv.split(',').map(o => o.trim().replace(/\/$/, ''));
 
-    // Log para debugging en producción
-    logger.info(`CORS request from origin: ${origin || 'no-origin'}`);
-    logger.info(`Allowed origins: ${allowedOrigins.join(', ')}`);
-
     // Permitir requests sin origin (servidor a servidor, Postman, etc.)
     if (!origin) {
-      logger.info('Request without origin - allowing');
+      if (process.env.NODE_ENV !== 'production') {
+        logger.debug('Request without origin - allowing');
+      }
       return callback(null, true);
     }
 
@@ -41,44 +39,57 @@ const corsOptions = {
     const isAllowed = allowedOrigins.some(allowedOrigin => {
       // Verificación exacta
       if (allowedOrigin === normalizedOrigin) return true;
-      
+
       // Verificación para dominios de Vercel (permite subdominios)
       if (allowedOrigin.includes('vercel.app') || normalizedOrigin.includes('vercel.app')) {
         const allowedDomain = allowedOrigin.replace(/^https?:\/\//, '');
         const requestDomain = normalizedOrigin.replace(/^https?:\/\//, '');
-        
+
         // Permitir variaciones comunes de dominios de Vercel
         if (allowedDomain.includes('mantentodb') && requestDomain.includes('mantentodb')) return true;
         if (allowedDomain.includes('mantenientodb') && requestDomain.includes('mantenientodb')) return true;
         if (allowedDomain === requestDomain) return true;
       }
-      
+
       return false;
     });
 
     if (isAllowed) {
-      logger.info(`Origin ${normalizedOrigin} is allowed`);
       callback(null, true);
     } else {
-      logger.warn(`CORS: Origin no permitido: ${origin}`);
-      logger.warn(`Expected one of: ${allowedOrigins.join(', ')}`);
-      
-      // En desarrollo, ser más permisivo
+      // Solo loguear en desarrollo o cuando hay error
       if (process.env.NODE_ENV !== 'production') {
+        logger.warn(`CORS: Origin no permitido: ${origin}`);
+        logger.warn(`Expected one of: ${allowedOrigins.join(', ')}`);
         logger.info('Development mode - allowing origin');
         callback(null, true);
       } else {
+        logger.warn(`CORS blocked: ${origin}`);
         callback(new Error('No permitido por CORS'));
       }
     }
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  maxAge: 86400 // Cache preflight requests for 24 hours
+  allowedHeaders: '*', // Permitir todos los headers
+  exposedHeaders: ['Content-Range', 'X-Content-Range'],
+  maxAge: 86400, // Cache preflight requests for 24 hours
+  preflightContinue: false,
+  optionsSuccessStatus: 204
 };
 
 app.use(cors(corsOptions));
+
+// Middleware para loggear peticiones (solo en desarrollo)
+app.use((req, res, next) => {
+  // Solo loguear en desarrollo y si no es un preflight
+  if (process.env.NODE_ENV !== 'production' && req.method !== 'OPTIONS') {
+    logger.debug(`📨 ${req.method} ${req.path}`);
+  }
+
+  next();
+});
+
 // Capture raw body for debugging/parsing when necessary (keeps parsed JSON too)
 app.use(express.json({
   limit: '10kb',

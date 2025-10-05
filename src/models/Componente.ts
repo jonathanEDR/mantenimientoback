@@ -69,7 +69,7 @@ export interface IComponente {
   numeroSerie: string;
   numeroParte: string;
   nombre: string;
-  categoria: ComponenteCategoria;
+  categoria: string; // Código del catálogo de componentes
   fabricante: string;
   fechaFabricacion: Date;
   fechaInstalacion?: Date;
@@ -114,9 +114,11 @@ const componenteSchema = new Schema<IComponente>({
   nombre: { type: String, required: true, trim: true },
   categoria: { 
     type: String, 
-    enum: Object.values(ComponenteCategoria), 
     required: true,
-    index: true
+    index: true,
+    trim: true,
+    uppercase: true
+    // Ya no usa enum hardcodeado - usa códigos del catálogo dinámico
   },
   fabricante: { type: String, required: true, trim: true },
   fechaFabricacion: { type: Date, required: true },

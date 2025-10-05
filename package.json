@@ -12,6 +12,7 @@
     "verify-users": "ts-node src/scripts/verificarUsuarios.ts",
     "migrate-users": "ts-node src/scripts/migrateUsers.ts",
     "migrate-users:improved": "ts-node src/scripts/migrateUsersImproved.ts",
+    "migrate-isactive": "ts-node src/scripts/migrateIsActive.ts",
     "status": "ts-node src/scripts/quickStatus.ts",
     "test-registration": "ts-node src/scripts/testRegistration.ts",
     "test-endpoint": "ts-node src/scripts/testEndpoint.ts"

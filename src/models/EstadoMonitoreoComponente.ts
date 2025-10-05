@@ -208,28 +208,24 @@ estadoMonitoreoComponenteSchema.pre('save', async function(next) {
       // Log esencial para monitoreo de overhauls
       logger.debug(`[OVERHAUL] Estado calculado - Valor: ${valorActualCalculado}/${this.valorLimite}, Intervalo: ${configOverhaul.intervaloOverhaul}h, Ciclo: ${configOverhaul.cicloActual}/${configOverhaul.ciclosOverhaul}`);
 
-      // NUEVA LÓGICA: Calcular overhauls basándose en intervalos fijos
-      // Calcular cuántos intervalos de overhaul caben en el límite del componente
-      const intervalosEnVidaUtil = Math.floor(this.valorLimite / configOverhaul.intervaloOverhaul);
+      // IMPORTANTE: NO recalcular cicloActual - este se incrementa manualmente al completar overhaul
+      // Solo calcular si está en el próximo intervalo basándose en el ciclo ACTUAL (no lo sobrescribimos)
       
-      // Calcular en qué intervalo está actualmente el componente (basado en intervalos fijos)
-      const intervaloActual = Math.floor(valorActualCalculado / configOverhaul.intervaloOverhaul);
+      // Calcular el próximo punto de overhaul basándose en el ciclo actual + 1
+      const proximoOverhaulEn = (configOverhaul.cicloActual + 1) * configOverhaul.intervaloOverhaul;
       
-      // Calcular el próximo punto de overhaul basándose en intervalos fijos
-      const proximoIntervalo = intervaloActual + 1;
-      const proximoOverhaulEn = proximoIntervalo * configOverhaul.intervaloOverhaul;
+      // Verificar si necesita overhaul ahora (ha alcanzado el próximo intervalo)
+      const horasSiguienteOverhaul = (configOverhaul.cicloActual + 1) * configOverhaul.intervaloOverhaul;
+      const necesitaOverhaulAhora = valorActualCalculado >= horasSiguienteOverhaul;
       
-      // Verificar si necesita overhaul ahora (ha alcanzado un múltiplo del intervalo)
-      const necesitaOverhaulAhora = (valorActualCalculado >= proximoOverhaulEn - configOverhaul.intervaloOverhaul) && 
-                                   (valorActualCalculado >= (intervaloActual * configOverhaul.intervaloOverhaul)) &&
-                                   (intervaloActual > configOverhaul.cicloActual);
-      
-      // Actualizar configuración
-      configOverhaul.proximoOverhaulEn = proximoOverhaulEn;
+      // Actualizar configuración solo si no fue modificada manualmente
+      if (!this.isModified('configuracionOverhaul.proximoOverhaulEn')) {
+        configOverhaul.proximoOverhaulEn = proximoOverhaulEn;
+      }
 
-      logger.debug(`[OVERHAUL] Intervalos: actual=${intervaloActual}, próximo=${proximoIntervalo}, próximo overhaul en: ${proximoOverhaulEn}h`);
+      logger.debug(`[OVERHAUL] Ciclo actual: ${configOverhaul.cicloActual}, próximo overhaul en: ${proximoOverhaulEn}h, horas actuales: ${valorActualCalculado}h`);
 
-      // VERIFICAR ESTADO BASÁNDOSE EN INTERVALOS Y LÍMITE DEL COMPONENTE
+      // VERIFICAR ESTADO BASÁNDOSE EN CICLO ACTUAL Y LÍMITE DEL COMPONENTE
 
       // 1. Si ya superó el límite del componente
       if (valorActualCalculado >= this.valorLimite) {
@@ -299,5 +295,6 @@ estadoMonitoreoComponenteSchema.pre('save', async function(next) {
 
 export const EstadoMonitoreoComponente = mongoose.model<IEstadoMonitoreoComponente>(
   'EstadoMonitoreoComponente', 
-  estadoMonitoreoComponenteSchema
+  estadoMonitoreoComponenteSchema,
+  'estadosMonitoreoComponente'  // Especificar explícitamente el nombre de la colección
 );

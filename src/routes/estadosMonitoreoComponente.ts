@@ -20,15 +20,25 @@ router.get('/componente/:componenteId', async (req: Request, res: Response) => {
       });
     }
 
+    // DESHABILITAR CACHE COMPLETAMENTE - HEADERS ANTI-CACHE
+    res.set({
+      'Cache-Control': 'no-cache, no-store, must-revalidate, private',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+      'Last-Modified': new Date().toUTCString(),
+      'ETag': '' // Deshabilitar ETag
+    });
+    
     const estados = await EstadoMonitoreoComponente
       .find({ componenteId })
       .populate('catalogoControlId', 'descripcionCodigo horaInicial horaFinal')
       .populate('componenteId', 'numeroSerie nombre categoria')
       .sort({ fechaProximaRevision: 1 });
-
+    
     res.json({
       success: true,
-      data: estados
+      data: estados,
+      timestamp: new Date().toISOString() // Forzar respuesta única
     });
 
   } catch (error) {
@@ -53,7 +63,9 @@ router.post('/componente/:componenteId', async (req: Request, res: Response) => 
       fechaProximaRevision,
       observaciones,
       configuracionPersonalizada,
-      configuracionOverhaul
+      configuracionOverhaul,
+      basadoEnAeronave,
+      offsetInicial
     } = req.body;
 
     if (!Types.ObjectId.isValid(componenteId)) {
@@ -110,14 +122,18 @@ router.post('/componente/:componenteId', async (req: Request, res: Response) => 
       unidad: unidad || 'HORAS',
       fechaProximaRevision: fechaProximaRevision || new Date(),
       observaciones,
+      basadoEnAeronave: basadoEnAeronave ?? true,
+      offsetInicial: offsetInicial || 0,
       configuracionPersonalizada,
       configuracionOverhaul
     });
 
     // Log para debug
-    logger.info('Creando estado con configuración overhaul:', {
+    logger.info('Creando estado de monitoreo:', {
       componenteId,
-      configuracionOverhaul: configuracionOverhaul || 'NO PROPORCIONADA'
+      catalogoControlId,
+      basadoEnAeronave: nuevoEstado.basadoEnAeronave,
+      offsetInicial: nuevoEstado.offsetInicial
     });
 
     await nuevoEstado.save();
@@ -128,7 +144,14 @@ router.post('/componente/:componenteId', async (req: Request, res: Response) => 
       { path: 'componenteId', select: 'numeroSerie nombre categoria' }
     ]);
 
-    logger.info(`Estado de monitoreo creado para componente ${componenteId}`);
+    logger.info('Estado de monitoreo creado exitosamente', { componenteId });
+
+    // Deshabilitar cache para que el frontend reciba datos actualizados
+    res.set({
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache',
+      'Expires': '0'
+    });
 
     res.status(201).json({
       success: true,
@@ -482,24 +505,31 @@ router.post('/:estadoId/completar-overhaul', async (req: Request, res: Response)
 
     // Actualizar configuración de overhaul
     const configOverhaul = estado.configuracionOverhaul;
+    const cicloAnterior = configOverhaul.cicloActual;
+    
     configOverhaul.cicloActual += 1;
     configOverhaul.horasUltimoOverhaul = horasActuales;
-    // El próximo overhaul se calculará automáticamente en el middleware pre('save')
     configOverhaul.requiereOverhaul = false;
     configOverhaul.fechaUltimoOverhaul = new Date();
+    
+    // Calcular el próximo overhaul basándose en el nuevo ciclo
+    const siguienteOverhaul = (configOverhaul.cicloActual + 1) * configOverhaul.intervaloOverhaul;
+    configOverhaul.proximoOverhaulEn = siguienteOverhaul;
 
-    // Log para debugging
-    logger.info(`Completando overhaul - Ciclo ${configOverhaul.cicloActual}:`, {
-      horasActuales,
-      intervaloOverhaul: configOverhaul.intervaloOverhaul,
-      valorLimite: estado.valorLimite
+    // Log para tracking
+    logger.info('Overhaul completado:', {
+      estadoId,
+      cicloAnterior,
+      cicloNuevo: configOverhaul.cicloActual,
+      ciclosMaximos: configOverhaul.ciclosOverhaul
     });
     
     if (observaciones) {
       configOverhaul.observacionesOverhaul = observaciones;
     }
 
-    // Actualizar estado - el middleware se encargará de recalcular el estado
+    // Actualizar estado - Marcar explícitamente que se modificó la configuración overhaul
+    estado.markModified('configuracionOverhaul');
     estado.estado = 'OK';
     estado.alertaActiva = false;
     estado.observaciones = observaciones ? 
@@ -514,7 +544,10 @@ router.post('/:estadoId/completar-overhaul', async (req: Request, res: Response)
       { path: 'componenteId', select: 'numeroSerie nombre categoria' }
     ]);
 
-    logger.info(`Overhaul completado para estado ${estadoId} - Ciclo ${configOverhaul.cicloActual}`);
+    logger.info('Overhaul completado exitosamente', {
+      estadoId,
+      ciclo: `${configOverhaul.cicloActual}/${configOverhaul.ciclosOverhaul}`
+    });
 
     res.json({
       success: true,
