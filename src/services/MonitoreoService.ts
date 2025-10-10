@@ -125,8 +125,6 @@ export class MonitoreoService {
     config: IConfiguracionAlerta = MonitoreoService.CONFIG_DEFECTO
   ): Promise<IResumenFlota> {
     try {
-      logger.info('Calculando resumen de alertas para toda la flota');
-
       // Obtener todas las aeronaves operativas
       const aeronaves = await Aeronave.find({
         estado: { $in: ['Operativo', 'En Mantenimiento'] }
@@ -179,8 +177,6 @@ export class MonitoreoService {
         generadoEn: new Date()
       };
 
-      logger.info(`Resumen de flota calculado: ${totalAlertasCriticas} alertas críticas, ${totalAlertasProximas} próximas en ${aeronaves.length} aeronaves`);
-      
       return resumenFlota;
 
     } catch (error) {

@@ -23,19 +23,12 @@ router.get('/', requireAuth, requirePermission('VIEW_CATALOGS'), async (req, res
       filtros.estado = req.query.estado;
     }
 
-    logger.info('Obteniendo catálogo de control y monitoreo', { 
-      filtros, 
-      paginacion: { page, limit } 
-    });
-
     const elementos = await CatalogoControlMonitoreo.find(filtros)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit);
 
     const total = await CatalogoControlMonitoreo.countDocuments(filtros);
-
-    logger.info(`Obtenidos ${elementos.length} elementos del catálogo de control y monitoreo`);
 
     res.json({
       elementos,
@@ -54,8 +47,6 @@ router.post('/', requireAuth, requirePermission('MANAGE_CATALOGS'), async (req, 
   try {
     const { descripcionCodigo, horaInicial, horaFinal, estado } = req.body;
 
-    logger.info('Creando nuevo elemento en catálogo de control y monitoreo', { descripcionCodigo });
-
     const nuevoElemento = new CatalogoControlMonitoreo({
       descripcionCodigo,
       horaInicial,
@@ -65,7 +56,6 @@ router.post('/', requireAuth, requirePermission('MANAGE_CATALOGS'), async (req, 
 
     await nuevoElemento.save();
 
-    logger.info('Elemento creado exitosamente en catálogo de control y monitoreo', { id: nuevoElemento._id });
     res.status(201).json(nuevoElemento);
   } catch (error) {
     logger.error('Error al crear elemento en catálogo de control y monitoreo:', error);
@@ -79,8 +69,6 @@ router.put('/:id', requireAuth, requirePermission('MANAGE_CATALOGS'), async (req
     const { id } = req.params;
     const { descripcionCodigo, horaInicial, horaFinal, estado } = req.body;
 
-    logger.info('Actualizando elemento en catálogo de control y monitoreo', { id });
-
     const elemento = await CatalogoControlMonitoreo.findByIdAndUpdate(
       id,
       { descripcionCodigo, horaInicial, horaFinal, estado },
@@ -91,7 +79,6 @@ router.put('/:id', requireAuth, requirePermission('MANAGE_CATALOGS'), async (req
       return res.status(404).json({ message: 'Elemento no encontrado' });
     }
 
-    logger.info('Elemento actualizado exitosamente en catálogo de control y monitoreo', { id });
     res.json(elemento);
   } catch (error) {
     logger.error('Error al actualizar elemento en catálogo de control y monitoreo:', error);
@@ -104,15 +91,12 @@ router.delete('/:id', requireAuth, requirePermission('MANAGE_CATALOGS'), async (
   try {
     const { id } = req.params;
 
-    logger.info('Eliminando elemento de catálogo de control y monitoreo', { id });
-
     const elemento = await CatalogoControlMonitoreo.findByIdAndDelete(id);
 
     if (!elemento) {
       return res.status(404).json({ message: 'Elemento no encontrado' });
     }
 
-    logger.info('Elemento eliminado exitosamente de catálogo de control y monitoreo', { id });
     res.json({ message: 'Elemento eliminado exitosamente' });
   } catch (error) {
     logger.error('Error al eliminar elemento de catálogo de control y monitoreo:', error);

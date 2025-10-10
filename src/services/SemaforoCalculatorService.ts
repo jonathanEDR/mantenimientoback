@@ -136,7 +136,7 @@ export class SemaforoCalculatorService {
     // Determinar si requiere atención (colores críticos)
     const requiereAtencion = color === 'MORADO' || color === 'ROJO' || color === 'NARANJA';
 
-    const resultado: IResultadoSemaforo = {
+    return {
       color,
       descripcion,
       horasRestantes: Math.max(horasRestantes, horasRestantes), // Mantener valores negativos
@@ -145,10 +145,6 @@ export class SemaforoCalculatorService {
       requiereAtencion,
       nivel
     };
-
-    logger.debug(`[SEMÁFORO] Calculado: ${color} - ${horasRestantes}h restantes - ${porcentajeProgreso.toFixed(1)}%`);
-    
-    return resultado;
   }
 
   /**

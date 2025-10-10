@@ -128,14 +128,6 @@ router.post('/componente/:componenteId', async (req: Request, res: Response) => 
       configuracionOverhaul
     });
 
-    // Log para debug
-    logger.info('Creando estado de monitoreo:', {
-      componenteId,
-      catalogoControlId,
-      basadoEnAeronave: nuevoEstado.basadoEnAeronave,
-      offsetInicial: nuevoEstado.offsetInicial
-    });
-
     await nuevoEstado.save();
 
     // Popular los datos para la respuesta
@@ -143,8 +135,6 @@ router.post('/componente/:componenteId', async (req: Request, res: Response) => 
       { path: 'catalogoControlId', select: 'descripcionCodigo horaInicial horaFinal' },
       { path: 'componenteId', select: 'numeroSerie nombre categoria' }
     ]);
-
-    logger.info('Estado de monitoreo creado exitosamente', { componenteId });
 
     // Deshabilitar cache para que el frontend reciba datos actualizados
     res.set({
@@ -217,12 +207,6 @@ router.put('/:estadoId', async (req: Request, res: Response) => {
       };
     }
 
-    // Log para debug
-    logger.info('Actualizando estado con configuración overhaul:', {
-      estadoId,
-      configuracionOverhaul: configuracionOverhaul || 'NO MODIFICADA'
-    });
-
     await estado.save();
 
     // Popular los datos para la respuesta
@@ -230,8 +214,6 @@ router.put('/:estadoId', async (req: Request, res: Response) => {
       { path: 'catalogoControlId', select: 'descripcionCodigo horaInicial horaFinal' },
       { path: 'componenteId', select: 'numeroSerie nombre categoria' }
     ]);
-
-    logger.info(`Estado de monitoreo ${estadoId} actualizado`);
 
     res.json({
       success: true,
@@ -268,8 +250,6 @@ router.delete('/:estadoId', async (req: Request, res: Response) => {
         message: 'Estado de monitoreo no encontrado'
       });
     }
-
-    logger.info(`Estado de monitoreo ${estadoId} eliminado`);
 
     res.json({
       success: true,
@@ -516,14 +496,6 @@ router.post('/:estadoId/completar-overhaul', async (req: Request, res: Response)
     const siguienteOverhaul = (configOverhaul.cicloActual + 1) * configOverhaul.intervaloOverhaul;
     configOverhaul.proximoOverhaulEn = siguienteOverhaul;
 
-    // Log para tracking
-    logger.info('Overhaul completado:', {
-      estadoId,
-      cicloAnterior,
-      cicloNuevo: configOverhaul.cicloActual,
-      ciclosMaximos: configOverhaul.ciclosOverhaul
-    });
-    
     if (observaciones) {
       configOverhaul.observacionesOverhaul = observaciones;
     }
@@ -543,11 +515,6 @@ router.post('/:estadoId/completar-overhaul', async (req: Request, res: Response)
       { path: 'catalogoControlId', select: 'descripcionCodigo horaInicial horaFinal' },
       { path: 'componenteId', select: 'numeroSerie nombre categoria' }
     ]);
-
-    logger.info('Overhaul completado exitosamente', {
-      estadoId,
-      ciclo: `${configOverhaul.cicloActual}/${configOverhaul.ciclosOverhaul}`
-    });
 
     res.json({
       success: true,
@@ -584,8 +551,6 @@ router.get('/alertas-overhaul/aeronave/:aeronaveId', async (req: Request, res: R
       });
     }
 
-    logger.info(`🔔 [ALERTAS OVERHAUL] Obteniendo alertas integradas para aeronave: ${aeronaveId}`);
-
     const alertasOverhaul = await AlertasOverhaulService.obtenerAlertasOverhaulAeronave(aeronaveId);
 
     res.json({
@@ -614,8 +579,6 @@ router.get('/alertas-overhaul/aeronave/:aeronaveId', async (req: Request, res: R
 // Obtener todas las alertas de overhauls de la flota
 router.get('/alertas-overhaul/flota', async (req: Request, res: Response) => {
   try {
-    logger.info('🔔 [ALERTAS OVERHAUL] Obteniendo alertas integradas para toda la flota');
-
     const alertasOverhaul = await AlertasOverhaulService.obtenerAlertasOverhaulFlota();
 
     // Agrupar estadísticas

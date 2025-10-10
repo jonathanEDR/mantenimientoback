@@ -306,17 +306,19 @@ estadoMonitoreoComponenteSchema.methods.obtenerUmbralAlerta = function(): number
   // Priorizar semáforo de overhaul si está habilitado
   const semaforoOverhaul = this.configuracionOverhaul?.semaforoPersonalizado;
   if (this.configuracionOverhaul?.habilitarOverhaul && semaforoOverhaul?.habilitado) {
-    return semaforoOverhaul.umbrales?.amarillo || 50;
+    // CORRECCIÓN: Usar umbral ROJO para alertas críticas, no amarillo
+    return semaforoOverhaul.umbrales?.rojo || 100;
   }
-  
+
   // Si no hay overhaul, usar semáforo de configuración personalizada
   const semaforoPersonalizado = this.configuracionPersonalizada?.semaforoPersonalizado;
   if (semaforoPersonalizado?.habilitado) {
-    return semaforoPersonalizado.umbrales?.amarillo || 50;
+    // CORRECCIÓN: Usar umbral ROJO para alertas críticas, no amarillo
+    return semaforoPersonalizado.umbrales?.rojo || 100;
   }
-  
-  // Valor por defecto si no hay semáforo
-  return 50;
+
+  // Valor por defecto más conservador si no hay semáforo
+  return 100;
 };
 
 // Middleware para actualizar el estado automáticamente
@@ -339,11 +341,9 @@ estadoMonitoreoComponenteSchema.pre('save', async function(next) {
         if (vidaUtilHoras) {
           // Usar las horas acumuladas del componente (desde su instalación)
           valorActualCalculado = Math.max(0, vidaUtilHoras.acumulado + this.offsetInicial);
-          
+
           // Actualizar el valorActual para mantener consistencia
           this.valorActual = valorActualCalculado;
-          
-          logger.debug(`[ESTADO] Componente ${this.componenteId}: horas acumuladas=${vidaUtilHoras.acumulado}, offset=${this.offsetInicial}, valorFinal=${valorActualCalculado}`);
         }
       }
     }
@@ -355,25 +355,20 @@ estadoMonitoreoComponenteSchema.pre('save', async function(next) {
     if (this.configuracionOverhaul?.habilitarOverhaul) {
       const configOverhaul = this.configuracionOverhaul;
 
-      // Log esencial para monitoreo de overhauls
-      logger.debug(`[OVERHAUL] Estado calculado - Valor: ${valorActualCalculado}/${this.valorLimite}, Intervalo: ${configOverhaul.intervaloOverhaul}h, Ciclo: ${configOverhaul.cicloActual}/${configOverhaul.ciclosOverhaul}`);
-
       // IMPORTANTE: NO recalcular cicloActual - este se incrementa manualmente al completar overhaul
       // Solo calcular si está en el próximo intervalo basándose en el ciclo ACTUAL (no lo sobrescribimos)
-      
+
       // Calcular el próximo punto de overhaul basándose en el ciclo actual + 1
       const proximoOverhaulEn = (configOverhaul.cicloActual + 1) * configOverhaul.intervaloOverhaul;
-      
+
       // Verificar si necesita overhaul ahora (ha alcanzado el próximo intervalo)
       const horasSiguienteOverhaul = (configOverhaul.cicloActual + 1) * configOverhaul.intervaloOverhaul;
       const necesitaOverhaulAhora = valorActualCalculado >= horasSiguienteOverhaul;
-      
+
       // Actualizar configuración solo si no fue modificada manualmente
       if (!this.isModified('configuracionOverhaul.proximoOverhaulEn')) {
         configOverhaul.proximoOverhaulEn = proximoOverhaulEn;
       }
-
-      logger.debug(`[OVERHAUL] Ciclo actual: ${configOverhaul.cicloActual}, próximo overhaul en: ${proximoOverhaulEn}h, horas actuales: ${valorActualCalculado}h`);
 
       // VERIFICAR ESTADO BASÁNDOSE EN CICLO ACTUAL Y LÍMITE DEL COMPONENTE
 
@@ -395,7 +390,6 @@ estadoMonitoreoComponenteSchema.pre('save', async function(next) {
           // Vencido pero sin overhaul requerido aún
           this.estado = 'VENCIDO';
           this.alertaActiva = true;
-          logger.info(`[OVERHAUL] Componente vencido, próximo overhaul en: ${proximoOverhaulEn}h`);
         }
       }
       // 2. Si necesita overhaul ahora mismo (antes del límite)
@@ -410,15 +404,12 @@ estadoMonitoreoComponenteSchema.pre('save', async function(next) {
         configOverhaul.requiereOverhaul = false;
         this.estado = 'PROXIMO';
         this.alertaActiva = true;
-        const horasRestantesOverhaul = proximoOverhaulEn - valorActualCalculado;
-        logger.info(`[OVERHAUL] ⚠️ Próximo a overhaul - ${valorActualCalculado}h (faltan ${horasRestantesOverhaul}h para overhaul)`);
       }
       // 4. Estado normal
       else {
         configOverhaul.requiereOverhaul = false;
         this.estado = 'OK';
         this.alertaActiva = false;
-        logger.debug(`[OVERHAUL] ✅ Estado OK - ${valorActualCalculado}h (próximo overhaul en ${proximoOverhaulEn}h)`);
       }
     }
 

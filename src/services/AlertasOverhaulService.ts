@@ -74,7 +74,6 @@ export class AlertasOverhaulService {
           config.intervaloOverhaul,
           config.semaforoPersonalizado
         );
-        logger.debug(`[SEMÁFORO OVERHAUL] Componente ${estado.componenteId}: ${semaforo.color} - ${semaforo.descripcion}`);
       } catch (error) {
         logger.error('Error calculando semáforo para overhaul:', error);
         // Fallback al sistema legacy

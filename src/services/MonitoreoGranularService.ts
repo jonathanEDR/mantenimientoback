@@ -58,8 +58,6 @@ export class MonitoreoGranularService {
    */
   static async calcularEstadoAeronave(aeronaveId: string): Promise<IResumenMonitoreoGranular> {
     try {
-      logger.info(`📊 [MONITOREO GRANULAR] Calculando estado para aeronave: ${aeronaveId}`);
-
       // Obtener la aeronave
       const aeronave = await Aeronave.findById(aeronaveId);
       if (!aeronave) {
@@ -184,8 +182,6 @@ export class MonitoreoGranularService {
         ultimaActualizacion: new Date()
       };
 
-      logger.info(`✅ [MONITOREO GRANULAR] Calculado para ${aeronave.matricula}: ${alertasComponentes.length} componentes, ${resumen.componentesCriticos} críticos`);
-      
       return resultado;
 
     } catch (error) {
@@ -199,8 +195,6 @@ export class MonitoreoGranularService {
    */
   static async calcularResumenFlotaGranular(): Promise<IResumenFlotaGranular> {
     try {
-      logger.info('📊 [MONITOREO GRANULAR] Calculando resumen de flota granular');
-
       // Obtener todas las aeronaves
       const aeronaves = await Aeronave.find().sort({ matricula: 1 });
       
@@ -250,8 +244,6 @@ export class MonitoreoGranularService {
         generadoEn: new Date()
       };
 
-      logger.info(`✅ [MONITOREO GRANULAR] Resumen de flota: ${resultado.totalAeronaves} aeronaves, ${resultado.totalAlertasComponentes} alertas de componentes`);
-      
       return resultado;
 
     } catch (error) {
