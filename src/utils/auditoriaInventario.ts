@@ -190,6 +190,114 @@ export class AuditoriaInventario {
 
     logger.warn('AUDITORIA - Alertas de mantenimiento generadas:', logData);
   }
+
+  /**
+   * Registra una eliminación de aeronave
+   */
+  static logEliminacionAeronave(data: {
+    id: any;
+    matricula: string;
+    tipo: string;
+    modelo: string;
+    fabricante: string;
+    estado: string;
+    horasVuelo: number;
+    componentesAsociados: number;
+    forzada: boolean;
+    timestamp: Date;
+    usuario?: string;
+  }): void {
+    const logData = {
+      evento: 'ELIMINACION_AERONAVE',
+      timestamp: data.timestamp.toISOString(),
+      aeronave: {
+        id: data.id,
+        matricula: data.matricula,
+        tipo: data.tipo,
+        modelo: data.modelo,
+        fabricante: data.fabricante,
+        estado: data.estado,
+        horasVuelo: data.horasVuelo
+      },
+      detalles: {
+        componentesAsociados: data.componentesAsociados,
+        eliminacionForzada: data.forzada,
+        requiereRevision: data.componentesAsociados > 0
+      },
+      usuario: data.usuario || 'SISTEMA'
+    };
+
+    if (data.forzada) {
+      logger.warn('AUDITORIA - Eliminación FORZADA de aeronave:', logData);
+    } else {
+      logger.info('AUDITORIA - Eliminación de aeronave:', logData);
+    }
+
+    // Log crítico si se eliminó aeronave con componentes
+    if (data.componentesAsociados > 0) {
+      logger.warn('AUDITORIA - Aeronave eliminada con componentes asociados:', {
+        evento: 'ELIMINACION_CON_COMPONENTES',
+        matricula: data.matricula,
+        componentesAsociados: data.componentesAsociados,
+        requiresAttention: true
+      });
+    }
+  }
+
+  /**
+   * Registra limpieza de componentes durante eliminación forzada
+   */
+  static logEliminacionConLimpieza(data: {
+    aeronaveId: string;
+    matricula: string;
+    componentesLimpiados: number;
+    timestamp: Date;
+    usuario?: string;
+  }): void {
+    const logData = {
+      evento: 'LIMPIEZA_COMPONENTES_ELIMINACION',
+      timestamp: data.timestamp.toISOString(),
+      aeronave: {
+        id: data.aeronaveId,
+        matricula: data.matricula
+      },
+      detalles: {
+        componentesLimpiados: data.componentesLimpiados,
+        accion: 'Componentes movidos a almacén y referencias eliminadas'
+      },
+      usuario: data.usuario || 'SISTEMA'
+    };
+
+    logger.warn('AUDITORIA - Limpieza de componentes por eliminación forzada:', logData);
+  }
+
+  /**
+   * Registra creación de nueva aeronave
+   */
+  static logCreacionAeronave(data: {
+    id: any;
+    matricula: string;
+    tipo: string;
+    modelo: string;
+    fabricante: string;
+    timestamp: Date;
+    usuario?: string;
+  }): void {
+    const logData = {
+      evento: 'CREACION_AERONAVE',
+      timestamp: data.timestamp.toISOString(),
+      aeronave: {
+        id: data.id,
+        matricula: data.matricula,
+        tipo: data.tipo,
+        modelo: data.modelo,
+        fabricante: data.fabricante
+      },
+      usuario: data.usuario || 'SISTEMA'
+    };
+
+    logger.info('AUDITORIA - Creación de nueva aeronave:', logData);
+  }
 }
 
 export default AuditoriaInventario;

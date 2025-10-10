@@ -565,4 +565,143 @@ router.post('/:estadoId/completar-overhaul', async (req: Request, res: Response)
   }
 });
 
+// =============================
+// NUEVOS ENDPOINTS PARA ALERTAS INTEGRADAS DE OVERHAULS
+// =============================
+
+// Importar el nuevo servicio de alertas integradas
+import AlertasOverhaulService from '../services/AlertasOverhaulService';
+
+// Obtener alertas de overhauls para una aeronave específica
+router.get('/alertas-overhaul/aeronave/:aeronaveId', async (req: Request, res: Response) => {
+  try {
+    const { aeronaveId } = req.params;
+
+    if (!Types.ObjectId.isValid(aeronaveId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de aeronave inválido'
+      });
+    }
+
+    logger.info(`🔔 [ALERTAS OVERHAUL] Obteniendo alertas integradas para aeronave: ${aeronaveId}`);
+
+    const alertasOverhaul = await AlertasOverhaulService.obtenerAlertasOverhaulAeronave(aeronaveId);
+
+    res.json({
+      success: true,
+      data: {
+        aeronaveId,
+        totalAlertas: alertasOverhaul.length,
+        alertasCriticas: alertasOverhaul.filter(a => a.criticidad === 'CRITICA').length,
+        alertasAltas: alertasOverhaul.filter(a => a.criticidad === 'ALTA').length,
+        alertasOverhaul,
+        ultimaActualizacion: new Date()
+      },
+      message: `Se encontraron ${alertasOverhaul.length} alertas de overhaul`
+    });
+
+  } catch (error) {
+    logger.error('Error al obtener alertas de overhaul para aeronave:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Obtener todas las alertas de overhauls de la flota
+router.get('/alertas-overhaul/flota', async (req: Request, res: Response) => {
+  try {
+    logger.info('🔔 [ALERTAS OVERHAUL] Obteniendo alertas integradas para toda la flota');
+
+    const alertasOverhaul = await AlertasOverhaulService.obtenerAlertasOverhaulFlota();
+
+    // Agrupar estadísticas
+    const estadisticas = {
+      totalAlertas: alertasOverhaul.length,
+      alertasCriticas: alertasOverhaul.filter(a => a.criticidad === 'CRITICA').length,
+      alertasAltas: alertasOverhaul.filter(a => a.criticidad === 'ALTA').length,
+      alertasMedias: alertasOverhaul.filter(a => a.criticidad === 'MEDIA').length,
+      alertasBajas: alertasOverhaul.filter(a => a.criticidad === 'BAJA').length,
+      requierenOverhaul: alertasOverhaul.filter(a => a.requiereOverhaul).length,
+      proximosOverhauls: alertasOverhaul.filter(a => a.estado === 'PROXIMO').length
+    };
+
+    res.json({
+      success: true,
+      data: {
+        estadisticas,
+        alertasOverhaul,
+        ultimaActualizacion: new Date()
+      },
+      message: `Se encontraron ${alertasOverhaul.length} alertas de overhaul en la flota`
+    });
+
+  } catch (error) {
+    logger.error('Error al obtener alertas de overhaul de la flota:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Calcular alerta específica para un estado de monitoreo
+router.get('/:estadoId/alerta-overhaul', async (req: Request, res: Response) => {
+  try {
+    const { estadoId } = req.params;
+
+    if (!Types.ObjectId.isValid(estadoId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de estado inválido'
+      });
+    }
+
+    const estado = await EstadoMonitoreoComponente.findById(estadoId)
+      .populate('componenteId', 'numeroSerie nombre categoria')
+      .populate('catalogoControlId', 'descripcionCodigo');
+
+    if (!estado) {
+      return res.status(404).json({
+        success: false,
+        message: 'Estado de monitoreo no encontrado'
+      });
+    }
+
+    if (!estado.configuracionOverhaul?.habilitarOverhaul) {
+      return res.status(400).json({
+        success: false,
+        message: 'Este estado no tiene overhauls habilitados'
+      });
+    }
+
+    const alertaOverhaul = AlertasOverhaulService.calcularAlertaOverhaul(estado);
+
+    res.json({
+      success: true,
+      data: {
+        estado: {
+          id: estado._id,
+          componente: estado.componenteId,
+          control: estado.catalogoControlId
+        },
+        alertaOverhaul
+      },
+      message: 'Alerta de overhaul calculada exitosamente'
+    });
+
+  } catch (error) {
+    logger.error('Error al calcular alerta de overhaul:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
 export default router;

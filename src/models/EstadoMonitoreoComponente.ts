@@ -1,5 +1,6 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 import logger from '../utils/logger';
+import { ISemaforoPersonalizado } from '../types/semaforoPersonalizado';
 
 export interface IEstadoMonitoreoComponente extends Document {
   componenteId: Types.ObjectId;
@@ -15,7 +16,7 @@ export interface IEstadoMonitoreoComponente extends Document {
   // Campos para unificación de sistemas
   basadoEnAeronave: boolean; // Si usa horas de aeronave o del componente individual
   offsetInicial: number; // Horas de aeronave cuando se creó/instaló el estado
-  // Configuración de Overhauls
+  // Configuración de Overhauls (INTEGRADA CON SEMÁFORO)
   configuracionOverhaul?: {
     habilitarOverhaul: boolean;
     intervaloOverhaul: number; // Horas entre overhauls
@@ -26,12 +27,18 @@ export interface IEstadoMonitoreoComponente extends Document {
     requiereOverhaul: boolean; // Si actualmente requiere overhaul
     fechaUltimoOverhaul?: Date; // Cuando se completó el último overhaul
     observacionesOverhaul?: string;
+    requiereParoAeronave: boolean; // Si el overhaul requiere paro de aeronave
+    // ===== SISTEMA DE SEMÁFORO PERSONALIZABLE =====
+    semaforoPersonalizado?: ISemaforoPersonalizado; // Sistema de alertas por colores
   };
+  // Configuración Personalizada (SIN OVERHAULS) - También usa semáforo
   configuracionPersonalizada?: {
-    alertaAnticipada: number; // Horas antes del vencimiento para alertar
-    criticidad: 'BAJA' | 'MEDIA' | 'ALTA' | 'CRITICA';
     requiereParoAeronave: boolean;
+    // ===== SISTEMA DE SEMÁFORO PERSONALIZABLE =====
+    semaforoPersonalizado?: ISemaforoPersonalizado; // Sistema de alertas por colores
   };
+  // Método auxiliar para obtener umbral de alerta
+  obtenerUmbralAlerta(): number;
 }
 
 const estadoMonitoreoComponenteSchema = new Schema<IEstadoMonitoreoComponente>({
@@ -93,7 +100,7 @@ const estadoMonitoreoComponenteSchema = new Schema<IEstadoMonitoreoComponente>({
     default: 0,
     min: 0
   },
-  // Configuración de Overhauls
+  // Configuración de Overhauls (INTEGRADA CON ALERTAS)
   configuracionOverhaul: {
     habilitarOverhaul: {
       type: Boolean,
@@ -133,22 +140,146 @@ const estadoMonitoreoComponenteSchema = new Schema<IEstadoMonitoreoComponente>({
     observacionesOverhaul: {
       type: String,
       trim: true
-    }
-  },
-  configuracionPersonalizada: {
-    alertaAnticipada: {
-      type: Number,
-      default: 50, // 50 horas antes por defecto
-      min: 0
-    },
-    criticidad: {
-      type: String,
-      enum: ['BAJA', 'MEDIA', 'ALTA', 'CRITICA'],
-      default: 'MEDIA'
     },
     requiereParoAeronave: {
       type: Boolean,
       default: false
+    },
+    // ===== SISTEMA DE SEMÁFORO PERSONALIZABLE =====
+    semaforoPersonalizado: {
+      habilitado: {
+        type: Boolean,
+        default: true // Activar semáforo por defecto
+      },
+      unidad: {
+        type: String,
+        enum: ['HORAS', 'PORCENTAJE'],
+        default: 'HORAS'
+      },
+      umbrales: {
+        morado: {
+          type: Number,
+          default: 100, // 100h DESPUÉS del límite - sobre-crítico
+          min: 0
+        },
+        rojo: {
+          type: Number,
+          default: 100, // 100h antes - crítico
+          min: 0
+        },
+        naranja: {
+          type: Number,
+          default: 50, // 50h antes - alto
+          min: 0
+        },
+        amarillo: {
+          type: Number,
+          default: 25, // 25h antes - medio
+          min: 0
+        },
+        verde: {
+          type: Number,
+          default: 0, // 0h antes - ok
+          min: 0
+        }
+      },
+      descripciones: {
+        morado: {
+          type: String,
+          default: 'SOBRE-CRÍTICO - Componente vencido en uso'
+        },
+        rojo: {
+          type: String,
+          default: 'Crítico - Programar overhaul inmediatamente'
+        },
+        naranja: {
+          type: String,
+          default: 'Alto - Preparar overhaul próximo'
+        },
+        amarillo: {
+          type: String,
+          default: 'Medio - Monitorear progreso'
+        },
+        verde: {
+          type: String,
+          default: 'OK - Funcionando normal'
+        }
+      },
+      fechaCreacion: {
+        type: Date,
+        default: Date.now
+      },
+      fechaActualizacion: {
+        type: Date,
+        default: Date.now
+      }
+    }
+  },
+  configuracionPersonalizada: {
+    requiereParoAeronave: {
+      type: Boolean,
+      default: false
+    },
+    // ===== SISTEMA DE SEMÁFORO PERSONALIZABLE =====
+    semaforoPersonalizado: {
+      habilitado: {
+        type: Boolean,
+        default: true // Activar semáforo por defecto
+      },
+      unidad: {
+        type: String,
+        enum: ['HORAS', 'PORCENTAJE'],
+        default: 'HORAS'
+      },
+      umbrales: {
+        morado: {
+          type: Number,
+          default: 100, // 100h después - sobre-crítico
+          min: 0
+        },
+        rojo: {
+          type: Number,
+          default: 100,
+          min: 0
+        },
+        naranja: {
+          type: Number,
+          default: 50,
+          min: 0
+        },
+        amarillo: {
+          type: Number,
+          default: 25,
+          min: 0
+        },
+        verde: {
+          type: Number,
+          default: 0,
+          min: 0
+        }
+      },
+      descripciones: {
+        morado: {
+          type: String,
+          default: 'SOBRE-CRÍTICO - Componente vencido en uso'
+        },
+        rojo: {
+          type: String,
+          default: 'Crítico - Acción inmediata requerida'
+        },
+        naranja: {
+          type: String,
+          default: 'Alto - Planificar mantenimiento pronto'
+        },
+        amarillo: {
+          type: String,
+          default: 'Medio - Monitorear de cerca'
+        },
+        verde: {
+          type: String,
+          default: 'OK - Funcionando correctamente'
+        }
+      }
     }
   }
 }, {
@@ -167,6 +298,26 @@ estadoMonitoreoComponenteSchema.index({
   componenteId: 1, 
   catalogoControlId: 1 
 }, { unique: true }); // Un componente no puede tener el mismo control duplicado
+
+// ============ MÉTODOS AUXILIARES ============
+
+// Método para obtener el umbral de alerta desde el semáforo
+estadoMonitoreoComponenteSchema.methods.obtenerUmbralAlerta = function(): number {
+  // Priorizar semáforo de overhaul si está habilitado
+  const semaforoOverhaul = this.configuracionOverhaul?.semaforoPersonalizado;
+  if (this.configuracionOverhaul?.habilitarOverhaul && semaforoOverhaul?.habilitado) {
+    return semaforoOverhaul.umbrales?.amarillo || 50;
+  }
+  
+  // Si no hay overhaul, usar semáforo de configuración personalizada
+  const semaforoPersonalizado = this.configuracionPersonalizada?.semaforoPersonalizado;
+  if (semaforoPersonalizado?.habilitado) {
+    return semaforoPersonalizado.umbrales?.amarillo || 50;
+  }
+  
+  // Valor por defecto si no hay semáforo
+  return 50;
+};
 
 // Middleware para actualizar el estado automáticamente
 estadoMonitoreoComponenteSchema.pre('save', async function(next) {
@@ -199,7 +350,6 @@ estadoMonitoreoComponenteSchema.pre('save', async function(next) {
 
     // Calcular estado basándose en el valor actual (calculado o manual)
     const horasRestantes = this.valorLimite - valorActualCalculado;
-    const alertaAnticipada = this.configuracionPersonalizada?.alertaAnticipada || 50;
 
     // ============ LÓGICA DE OVERHAULS INTEGRADA CON MONITOREO ============
     if (this.configuracionOverhaul?.habilitarOverhaul) {
@@ -255,12 +405,13 @@ estadoMonitoreoComponenteSchema.pre('save', async function(next) {
         this.alertaActiva = true;
         logger.warn(`[OVERHAUL] 🚨 OVERHAUL REQUERIDO - ${valorActualCalculado}h (intervalo: ${configOverhaul.intervaloOverhaul}h, ciclo: ${configOverhaul.cicloActual}/${configOverhaul.ciclosOverhaul})`);
       }
-      // 3. Si está próximo a un overhaul
-      else if (valorActualCalculado >= (proximoOverhaulEn - alertaAnticipada)) {
+      // 3. Si está próximo a un overhaul (usar semáforo o umbral por defecto)
+      else if (valorActualCalculado >= (proximoOverhaulEn - this.obtenerUmbralAlerta())) {
         configOverhaul.requiereOverhaul = false;
         this.estado = 'PROXIMO';
         this.alertaActiva = true;
-        logger.info(`[OVERHAUL] ⚠️ Próximo a overhaul - ${valorActualCalculado}h (faltan ${proximoOverhaulEn - valorActualCalculado}h para overhaul)`);
+        const horasRestantesOverhaul = proximoOverhaulEn - valorActualCalculado;
+        logger.info(`[OVERHAUL] ⚠️ Próximo a overhaul - ${valorActualCalculado}h (faltan ${horasRestantesOverhaul}h para overhaul)`);
       }
       // 4. Estado normal
       else {
@@ -274,10 +425,12 @@ estadoMonitoreoComponenteSchema.pre('save', async function(next) {
     // ============ LÓGICA NORMAL DE VENCIMIENTO ============
     // Solo aplicar si no está en modo overhaul
     if (!this.configuracionOverhaul?.habilitarOverhaul) {
+      const umbralAlerta = this.obtenerUmbralAlerta(); // Obtener desde semáforo
+      
       if (horasRestantes <= 0) {
         this.estado = 'VENCIDO';
         this.alertaActiva = true;
-      } else if (horasRestantes <= alertaAnticipada) {
+      } else if (horasRestantes <= umbralAlerta) {
         this.estado = 'PROXIMO';
         this.alertaActiva = true;
       } else {

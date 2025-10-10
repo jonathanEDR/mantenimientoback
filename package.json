@@ -15,7 +15,8 @@
     "migrate-isactive": "ts-node src/scripts/migrateIsActive.ts",
     "status": "ts-node src/scripts/quickStatus.ts",
     "test-registration": "ts-node src/scripts/testRegistration.ts",
-    "test-endpoint": "ts-node src/scripts/testEndpoint.ts"
+    "test-endpoint": "ts-node src/scripts/testEndpoint.ts",
+    "diagnostico-inventario": "node scripts/diagnostico-inventario.js"
   },
   "dependencies": {
     "@clerk/clerk-sdk-node": "^4.13.23",

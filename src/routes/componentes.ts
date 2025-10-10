@@ -343,28 +343,67 @@ router.get('/:id', requireAuth, requirePermission('VIEW_COMPONENTS'), async (req
   }
 });
 
-// POST /api/mantenimiento/componentes - Crear nuevo componente
+// POST /api/mantenimiento/componentes - Crear nuevo componente MEJORADO
 router.post('/', requireAuth, requirePermission('CREATE_COMPONENTS'), async (req, res) => {
   try {
     const componenteData = req.body;
-    logger.info(`Creando nuevo componente: ${componenteData.numeroSerie}`);
+    const { numeroSerie, numeroParte, nombre, categoria, fabricante } = componenteData;
 
-    // Verificar si ya existe un componente con ese número de serie
-    const componenteExistente = await Componente.findOne({ 
-      numeroSerie: componenteData.numeroSerie 
-    });
-    
-    if (componenteExistente) {
+    logger.info(`Creando nuevo componente: ${numeroSerie || 'N/A'}`);
+
+    // 1. Validar campos requeridos
+    if (!numeroSerie || !numeroParte || !nombre || !categoria || !fabricante) {
+      const camposFaltantes = [];
+      if (!numeroSerie) camposFaltantes.push('numeroSerie');
+      if (!numeroParte) camposFaltantes.push('numeroParte');
+      if (!nombre) camposFaltantes.push('nombre');
+      if (!categoria) camposFaltantes.push('categoria');
+      if (!fabricante) camposFaltantes.push('fabricante');
+
       return res.status(400).json({
         success: false,
-        message: 'Ya existe un componente con ese número de serie'
+        message: 'Faltan campos requeridos',
+        error: {
+          type: 'MISSING_FIELDS',
+          camposFaltantes,
+          solucion: 'Proporcione todos los campos requeridos'
+        }
       });
     }
 
+    // 2. Verificar si ya existe un componente con ese número de serie
+    const componenteExistente = await Componente.findOne({
+      numeroSerie: numeroSerie.toUpperCase().trim()
+    });
+
+    if (componenteExistente) {
+      logger.warn(`Intento de crear componente con número de serie duplicado: ${numeroSerie.toUpperCase().trim()}`);
+      return res.status(409).json({
+        success: false,
+        message: `El número de serie ${numeroSerie.toUpperCase().trim()} ya existe en el sistema`,
+        error: {
+          type: 'DUPLICATE_NUMERO_SERIE',
+          numeroSerie: numeroSerie.toUpperCase().trim(),
+          componenteExistente: {
+            id: componenteExistente._id,
+            numeroSerie: componenteExistente.numeroSerie,
+            nombre: componenteExistente.nombre,
+            categoria: componenteExistente.categoria,
+            estado: componenteExistente.estado
+          },
+          solucion: 'Use un número de serie diferente o edite el componente existente'
+        }
+      });
+    }
+
+    // 3. Crear el componente
     const nuevoComponente = new Componente(componenteData);
     const componenteGuardado = await nuevoComponente.save();
 
-    logger.info(`Componente creado exitosamente: ${componenteGuardado.numeroSerie}`);
+    // 4. Invalidar cache
+    invalidateStatsCache();
+
+    logger.info(`Componente creado exitosamente: ${componenteGuardado.numeroSerie} (ID: ${componenteGuardado._id})`);
 
     res.status(201).json({
       success: true,
@@ -372,12 +411,50 @@ router.post('/', requireAuth, requirePermission('CREATE_COMPONENTS'), async (req
       data: componenteGuardado
     });
 
-  } catch (error) {
+  } catch (error: any) {
     logger.error('Error al crear componente:', error);
+
+    // Manejo específico de error de duplicado (E11000)
+    if (error.code === 11000) {
+      const campo = Object.keys(error.keyPattern || {})[0] || 'desconocido';
+      const valor = error.keyValue ? error.keyValue[campo] : 'N/A';
+
+      return res.status(409).json({
+        success: false,
+        message: `Ya existe un registro con ese ${campo}`,
+        error: {
+          type: 'DUPLICATE_KEY_ERROR',
+          field: campo,
+          value: valor,
+          solucion: `Verifique que el ${campo} sea único. Si el problema persiste después de eliminar registros, puede haber un problema con los índices de MongoDB.`
+        }
+      });
+    }
+
+    // Error de validación de Mongoose
+    if (error.name === 'ValidationError') {
+      const errores = Object.values(error.errors).map((err: any) => ({
+        campo: err.path,
+        mensaje: err.message,
+        tipo: err.kind,
+        valorProporcionado: err.value
+      }));
+
+      return res.status(400).json({
+        success: false,
+        message: 'Error de validación en los datos proporcionados',
+        error: {
+          type: 'VALIDATION_ERROR',
+          errores
+        }
+      });
+    }
+
+    // Error genérico
     res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
-      error: process.env.NODE_ENV === 'development' ? error : {}
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -608,35 +685,119 @@ router.put('/:id/historial', requireAuth, requirePermission('EDIT_COMPONENTS'), 
   }
 });
 
-// DELETE /api/mantenimiento/componentes/:id - Eliminar componente
+// DELETE /api/mantenimiento/componentes/:id - Eliminar componente MEJORADO
 router.delete('/:id', requireAuth, requirePermission('DELETE_COMPONENTS'), async (req, res) => {
   try {
     const { id } = req.params;
-    logger.info(`Eliminando componente con ID: ${id}`);
+    const force = req.query.force === 'true';
 
-    const componenteEliminado = await Componente.findByIdAndDelete(id);
+    logger.info(`Solicitud de eliminación de componente con ID: ${id}${force ? ' (FORZADA)' : ''}`);
 
-    if (!componenteEliminado) {
+    // 1. Verificar si el componente existe
+    const componente = await Componente.findById(id);
+    if (!componente) {
+      logger.warn(`Intento de eliminar componente inexistente: ${id}`);
       return res.status(404).json({
         success: false,
-        message: 'Componente no encontrado'
+        message: 'Componente no encontrado',
+        error: {
+          type: 'NOT_FOUND',
+          id
+        }
       });
     }
 
-    logger.info(`Componente eliminado exitosamente: ${componenteEliminado.numeroSerie}`);
+    // 2. Verificar estados de monitoreo asociados
+    const estadosCount = await EstadoMonitoreoComponente.countDocuments({ componenteId: id });
+
+    if (estadosCount > 0 && !force) {
+      // Obtener lista de estados asociados para informar al usuario
+      const estados = await EstadoMonitoreoComponente.find({ componenteId: id })
+        .populate('catalogoControlId', 'descripcionCodigo codigoControl categoria')
+        .select('estado valorActual valorLimite unidad catalogoControlId')
+        .lean();
+
+      logger.warn(`Intento de eliminar componente ${componente.numeroSerie} con ${estadosCount} estado(s) de monitoreo asociado(s)`);
+
+      return res.status(400).json({
+        success: false,
+        message: `No se puede eliminar el componente. Tiene ${estadosCount} estado(s) de monitoreo asociado(s)`,
+        error: {
+          type: 'ESTADOS_MONITOREO_ASOCIADOS',
+          estadosCount,
+          estados: estados.map((estado: any) => ({
+            catalogoControl: estado.catalogoControlId?.descripcionCodigo || 'N/A',
+            estado: estado.estado,
+            valorActual: estado.valorActual,
+            valorLimite: estado.valorLimite,
+            unidad: estado.unidad
+          })),
+          componente: {
+            numeroSerie: componente.numeroSerie,
+            nombre: componente.nombre,
+            categoria: componente.categoria,
+            estado: componente.estado
+          },
+          solucion: 'Debe eliminar todos los estados de monitoreo antes de eliminar el componente, o use force=true para eliminar todo automáticamente'
+        }
+      });
+    }
+
+    // 3. Si force=true, eliminar estados de monitoreo asociados
+    let estadosEliminados = 0;
+    if (estadosCount > 0 && force) {
+      const resultadoEstados = await EstadoMonitoreoComponente.deleteMany({ componenteId: id });
+      estadosEliminados = resultadoEstados.deletedCount || 0;
+
+      logger.warn(`Eliminación forzada: ${estadosEliminados} estado(s) de monitoreo eliminados del componente ${componente.numeroSerie}`);
+    }
+
+    // 4. Eliminar el componente
+    await Componente.findByIdAndDelete(id);
+
+    // 5. Invalidar cache
+    invalidateStatsCache();
+
+    // 6. Auditoría
+    logger.info(`Componente eliminado exitosamente: ${componente.numeroSerie}${estadosEliminados > 0 ? ` (con ${estadosEliminados} estados de monitoreo)` : ''}`);
 
     res.json({
       success: true,
       message: 'Componente eliminado exitosamente',
-      data: componenteEliminado
+      data: {
+        componenteEliminado: {
+          id: componente._id,
+          numeroSerie: componente.numeroSerie,
+          nombre: componente.nombre,
+          categoria: componente.categoria,
+          estado: componente.estado,
+          fabricante: componente.fabricante,
+          aeronaveActual: componente.aeronaveActual,
+          estadosMonitoreoAsociados: estadosCount
+        },
+        estadosEliminados
+      }
     });
 
-  } catch (error) {
+  } catch (error: any) {
     logger.error('Error al eliminar componente:', error);
+
+    // Manejo específico de error de CastError (ID inválido)
+    if (error.name === 'CastError') {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de componente inválido',
+        error: {
+          type: 'INVALID_ID',
+          id: req.params.id
+        }
+      });
+    }
+
     res.status(500).json({
       success: false,
       message: 'Error interno del servidor',
-      error: process.env.NODE_ENV === 'development' ? error : {}
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });

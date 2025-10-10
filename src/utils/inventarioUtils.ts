@@ -1,5 +1,6 @@
 import Aeronave from '../models/Aeronave';
 import Componente from '../models/Componente';
+import { EstadoMonitoreoComponente } from '../models/EstadoMonitoreoComponente';
 import logger from './logger';
 
 export interface PropagacionResult {
@@ -161,47 +162,56 @@ export async function propagarHorasAComponentes(
 
         componenteInfo.actualizado = true;
         result.componentesActualizados++;
-        
-        // 🆕 ACTUALIZAR ESTADOS DE MONITOREO DEL COMPONENTE
+
+        // ✅ ACTUALIZAR ESTADOS DE MONITOREO DEL COMPONENTE - VERSIÓN ATÓMICA
         let estadosActualizadosComponente = 0;
         try {
-          const EstadoMonitoreoComponente = (await import('../models/EstadoMonitoreoComponente')).EstadoMonitoreoComponente;
-          
-          // Buscar todos los estados de monitoreo de este componente
-          const estadosMonitoreo = await EstadoMonitoreoComponente.find({ 
-            componenteId: componente._id 
-          });
-
-          // Actualizar cada estado de monitoreo usando save() para disparar middleware
-          for (const estado of estadosMonitoreo) {
-            // Cargar el documento completo para poder usar save()
-            const estadoCompleto = await EstadoMonitoreoComponente.findById(estado._id);
-            if (estadoCompleto) {
-              // Incrementar el valor actual
-              estadoCompleto.valorActual += incrementoHoras;
-              
-              // Usar save() para disparar el middleware pre('save') con cálculos de overhaul
-              await estadoCompleto.save();
-              
-              estadosActualizadosComponente++;
-              result.estadosMonitoreoActualizados = (result.estadosMonitoreoActualizados || 0) + 1;
-              
-              logger.debug(`Estado monitoreo actualizado: +${incrementoHoras}h`);
+          // PASO 1: Actualización atómica usando updateMany con $inc
+          // Esta operación es thread-safe y previene race conditions
+          const resultadoActualizacion = await EstadoMonitoreoComponente.updateMany(
+            { componenteId: componente._id },
+            {
+              $inc: { valorActual: incrementoHoras }, // ✅ Operador atómico
+              $set: { fechaUltimaActualizacion: new Date() }
             }
-          }
+          );
 
-          if (estadosMonitoreo.length > 0) {
-            logger.info(`${estadosMonitoreo.length} estados de monitoreo actualizados para componente ${componente.numeroSerie}`);
+          estadosActualizadosComponente = resultadoActualizacion.modifiedCount || 0;
+          result.estadosMonitoreoActualizados = (result.estadosMonitoreoActualizados || 0) + estadosActualizadosComponente;
+
+          if (estadosActualizadosComponente > 0) {
+            logger.info(`${estadosActualizadosComponente} estados de monitoreo actualizados atómicamente para componente ${componente.numeroSerie}`);
+
+            // PASO 2: Recalcular estados (OK, PROXIMO, VENCIDO, OVERHAUL_REQUERIDO)
+            // Necesario porque updateMany no dispara el middleware pre('save')
+            const estadosParaRecalcular = await EstadoMonitoreoComponente.find({
+              componenteId: componente._id
+            });
+
+            // Disparar save() en cada estado para ejecutar middleware con lógica de overhauls
+            for (const estado of estadosParaRecalcular) {
+              try {
+                // No modificamos valores, solo disparamos el middleware
+                // El middleware recalculará el estado basándose en valorActual actualizado
+                await estado.save();
+              } catch (saveError) {
+                logger.warn(`Error recalculando estado ${estado._id}:`, saveError);
+                // Continuar con otros estados incluso si uno falla
+              }
+            }
+
+            logger.info(`Estados recalculados para componente ${componente.numeroSerie}`);
           }
 
         } catch (monitoreoError) {
-          logger.warn(`Error actualizando estados de monitoreo para componente ${componente.numeroSerie}:`, monitoreoError);
+          const errorMsg = monitoreoError instanceof Error ? monitoreoError.message : 'Error desconocido';
+          logger.warn(`Error actualizando estados de monitoreo para componente ${componente.numeroSerie}: ${errorMsg}`);
           // No fallar la propagación general por errores de monitoreo
         }
-        
+
         componenteInfo.estadosMonitoreoActualizados = estadosActualizadosComponente;
-        
-        logger.debug(`Componente ${componente.numeroSerie} actualizado con ${incrementoHoras} horas`);
+
+        logger.info(`Componente ${componente.numeroSerie} actualizado: +${incrementoHoras}h (${estadosActualizadosComponente} estados actualizados)`);
 
       } catch (error) {
         const errorMsg = error instanceof Error ? error.message : 'Error desconocido';

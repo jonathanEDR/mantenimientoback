@@ -194,27 +194,49 @@ router.get('/:id', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/inventario - Crear nueva aeronave
-router.post('/', requireAuth, async (req, res) => {
+// POST /api/inventario - Crear nueva aeronave con manejo robusto de errores
+router.post('/', requireAuth, requirePermission('CREATE_INVENTORY'), async (req, res) => {
   try {
     const { matricula, tipo, modelo, fabricante, anoFabricacion, estado, ubicacionActual, horasVuelo, observaciones } = req.body;
-    
+
     logger.info(`Creando nueva aeronave con matrícula: ${matricula}`);
 
     // Validar campos requeridos
     if (!matricula || !tipo || !modelo || !fabricante || !anoFabricacion || !ubicacionActual) {
       return res.status(400).json({
         success: false,
-        message: 'Faltan campos requeridos'
+        message: 'Faltan campos requeridos',
+        error: {
+          type: 'VALIDATION_ERROR',
+          camposFaltantes: [
+            !matricula && 'matricula',
+            !tipo && 'tipo',
+            !modelo && 'modelo',
+            !fabricante && 'fabricante',
+            !anoFabricacion && 'anoFabricacion',
+            !ubicacionActual && 'ubicacionActual'
+          ].filter(Boolean)
+        }
       });
     }
 
     // Verificar si ya existe una aeronave con esa matrícula
     const aeronaveExistente = await Aeronave.findOne({ matricula: matricula.toUpperCase() });
     if (aeronaveExistente) {
-      return res.status(400).json({
+      logger.warn(`Intento de crear aeronave con matrícula duplicada: ${matricula.toUpperCase()}`);
+      return res.status(409).json({
         success: false,
-        message: 'Ya existe una aeronave con esa matrícula'
+        message: 'Ya existe una aeronave con esa matrícula',
+        error: {
+          type: 'DUPLICATE_MATRICULA',
+          matricula: matricula.toUpperCase(),
+          aeronaveExistente: {
+            id: aeronaveExistente._id,
+            matricula: aeronaveExistente.matricula,
+            modelo: aeronaveExistente.modelo,
+            tipo: aeronaveExistente.tipo
+          }
+        }
       });
     }
 
@@ -232,7 +254,20 @@ router.post('/', requireAuth, async (req, res) => {
 
     const aeronaveGuardada = await nuevaAeronave.save();
 
-    logger.info(`Aeronave creada exitosamente: ${aeronaveGuardada.matricula}`);
+    // Invalidar cache de estadísticas
+    invalidateStatsCache();
+
+    // Registrar auditoría de creación
+    AuditoriaInventario.logCreacionAeronave({
+      id: aeronaveGuardada._id,
+      matricula: aeronaveGuardada.matricula,
+      tipo: aeronaveGuardada.tipo,
+      modelo: aeronaveGuardada.modelo,
+      fabricante: aeronaveGuardada.fabricante,
+      timestamp: new Date()
+    });
+
+    logger.info(`✓ Aeronave creada exitosamente: ${aeronaveGuardada.matricula} (ID: ${aeronaveGuardada._id})`);
 
     res.status(201).json({
       success: true,
@@ -240,12 +275,61 @@ router.post('/', requireAuth, async (req, res) => {
       data: aeronaveGuardada
     });
 
-  } catch (error) {
+  } catch (error: any) {
     logger.error('Error al crear aeronave:', error);
+
+    // Manejo específico de error de índice duplicado (E11000)
+    if (error.code === 11000 || error.name === 'MongoServerError') {
+      const campo = error.keyPattern ? Object.keys(error.keyPattern)[0] : 'desconocido';
+      const valor = error.keyValue ? error.keyValue[campo] : 'desconocido';
+
+      logger.error(`Error de duplicado en campo ${campo}: ${valor}`);
+
+      return res.status(409).json({
+        success: false,
+        message: `Ya existe un registro con ese ${campo}`,
+        error: {
+          type: 'DUPLICATE_KEY_ERROR',
+          field: campo,
+          value: valor,
+          solucion: campo === 'matricula'
+            ? 'Verifique que la matrícula sea única. Si el problema persiste, ejecute: npm run diagnostico-inventario'
+            : 'Verifique que el valor sea único'
+        }
+      });
+    }
+
+    // Manejo de errores de validación de Mongoose
+    if (error.name === 'ValidationError') {
+      const erroresValidacion = Object.values(error.errors).map((e: any) => ({
+        campo: e.path,
+        mensaje: e.message,
+        tipo: e.kind,
+        valorProporcionado: e.value
+      }));
+
+      logger.error('Errores de validación:', erroresValidacion);
+
+      return res.status(400).json({
+        success: false,
+        message: 'Error de validación en los datos proporcionados',
+        error: {
+          type: 'VALIDATION_ERROR',
+          errores: erroresValidacion
+        }
+      });
+    }
+
+    // Error genérico
     res.status(500).json({
       success: false,
-      message: 'Error interno del servidor',
-      error: process.env.NODE_ENV === 'development' ? error : {}
+      message: 'Error interno del servidor al crear aeronave',
+      error: process.env.NODE_ENV === 'development' ? {
+        type: error.name,
+        message: error.message,
+        code: error.code,
+        stack: error.stack
+      } : {}
     });
   }
 });
@@ -315,35 +399,143 @@ router.put('/:id', requireAuth, async (req, res) => {
   }
 });
 
-// DELETE /api/inventario/:id - Eliminar aeronave
-router.delete('/:id', requireAuth, async (req, res) => {
+// DELETE /api/inventario/:id - Eliminar aeronave con validaciones de seguridad
+router.delete('/:id', requireAuth, requirePermission('DELETE_INVENTORY'), async (req, res) => {
   try {
     const { id } = req.params;
-    logger.info(`Eliminando aeronave con ID: ${id}`);
+    const force = req.query.force === 'true'; // Parámetro opcional para forzar eliminación
 
-    const aeronaveEliminada = await Aeronave.findByIdAndDelete(id);
+    logger.info(`Solicitud de eliminación de aeronave con ID: ${id}${force ? ' (FORZADA)' : ''}`);
 
-    if (!aeronaveEliminada) {
+    // 1. Verificar si la aeronave existe
+    const aeronave = await Aeronave.findById(id);
+
+    if (!aeronave) {
+      logger.warn(`Intento de eliminar aeronave inexistente: ${id}`);
       return res.status(404).json({
         success: false,
         message: 'Aeronave no encontrada'
       });
     }
 
-    logger.info(`Aeronave eliminada exitosamente: ${aeronaveEliminada.matricula}`);
+    // 2. Verificar componentes asociados
+    const componentesCount = await Componente.countDocuments({ aeronaveActual: id });
+
+    if (componentesCount > 0 && !force) {
+      logger.warn(`Intento de eliminar aeronave ${aeronave.matricula} con ${componentesCount} componente(s) asociado(s)`);
+
+      // Obtener lista de componentes para mostrar al usuario
+      const componentes = await Componente.find({ aeronaveActual: id })
+        .select('numeroSerie nombre categoria estado')
+        .limit(10); // Limitar a 10 para no sobrecargar la respuesta
+
+      return res.status(400).json({
+        success: false,
+        message: `No se puede eliminar la aeronave. Tiene ${componentesCount} componente(s) asociado(s)`,
+        error: {
+          type: 'COMPONENTES_ASOCIADOS',
+          componentesCount,
+          componentes: componentes.map(c => ({
+            numeroSerie: c.numeroSerie,
+            nombre: c.nombre,
+            categoria: c.categoria,
+            estado: c.estado
+          })),
+          solucion: 'Debe desinstalar o reasignar todos los componentes antes de eliminar la aeronave, o use force=true para eliminar y limpiar referencias automáticamente'
+        }
+      });
+    }
+
+    // 3. Si force=true y hay componentes, limpiar referencias
+    if (componentesCount > 0 && force) {
+      logger.info(`Limpiando ${componentesCount} componente(s) asociado(s) a aeronave ${aeronave.matricula}`);
+
+      const resultadoLimpieza = await Componente.updateMany(
+        { aeronaveActual: id },
+        {
+          $set: {
+            aeronaveActual: null,
+            estado: 'EN_ALMACEN',
+            fechaInstalacion: null,
+            posicionInstalacion: null
+          }
+        }
+      );
+
+      logger.info(`Referencias limpiadas: ${resultadoLimpieza.modifiedCount} componentes movidos a almacén`);
+
+      // Registrar auditoría de limpieza
+      AuditoriaInventario.logEliminacionConLimpieza({
+        aeronaveId: id,
+        matricula: aeronave.matricula,
+        componentesLimpiados: resultadoLimpieza.modifiedCount,
+        timestamp: new Date()
+      });
+    }
+
+    // 4. Verificar órdenes de trabajo pendientes o inspecciones
+    // TODO: Implementar cuando tengamos el módulo de órdenes de trabajo
+    // const ordenesPendientes = await OrdenTrabajo.countDocuments({ aeronaveId: id, estado: { $in: ['PENDIENTE', 'EN_PROGRESO'] } });
+
+    // 5. Guardar datos de la aeronave para auditoría antes de eliminar
+    const aeronaveData = {
+      id: aeronave._id,
+      matricula: aeronave.matricula,
+      tipo: aeronave.tipo,
+      modelo: aeronave.modelo,
+      fabricante: aeronave.fabricante,
+      estado: aeronave.estado,
+      horasVuelo: aeronave.horasVuelo,
+      componentesAsociados: componentesCount
+    };
+
+    // 6. Eliminar la aeronave
+    await Aeronave.findByIdAndDelete(id);
+
+    // 7. Invalidar cache de estadísticas
+    invalidateStatsCache();
+
+    // 8. Registrar auditoría de eliminación
+    AuditoriaInventario.logEliminacionAeronave({
+      ...aeronaveData,
+      forzada: force,
+      timestamp: new Date()
+    });
+
+    logger.info(`✓ Aeronave eliminada exitosamente: ${aeronaveData.matricula} (ID: ${id})`);
 
     res.json({
       success: true,
       message: 'Aeronave eliminada exitosamente',
-      data: aeronaveEliminada
+      data: {
+        aeronaveEliminada: aeronaveData,
+        componentesLimpiados: force ? componentesCount : 0
+      }
     });
 
-  } catch (error) {
+  } catch (error: any) {
     logger.error('Error al eliminar aeronave:', error);
+
+    // Manejo específico de errores
+    if (error.name === 'CastError') {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de aeronave inválido',
+        error: {
+          type: 'INVALID_ID',
+          details: error.message
+        }
+      });
+    }
+
     res.status(500).json({
       success: false,
-      message: 'Error interno del servidor',
-      error: process.env.NODE_ENV === 'development' ? error : {}
+      message: 'Error interno del servidor al eliminar aeronave',
+      error: process.env.NODE_ENV === 'development' ? {
+        type: error.name,
+        message: error.message,
+        stack: error.stack
+      } : {}
     });
   }
 });
@@ -372,6 +564,66 @@ router.put('/:id/horas-con-propagacion', requireAuth, async (req, res) => {
         message: 'Aeronave no encontrada'
       });
     }
+
+    // ✅ VALIDACIÓN: Prevenir decremento de horas
+    if (horasVuelo < aeronaveExistente.horasVuelo) {
+      const decremento = aeronaveExistente.horasVuelo - horasVuelo;
+      logger.warn(`Intento de decrementar horas de aeronave ${aeronaveExistente.matricula}: ${aeronaveExistente.horasVuelo}h → ${horasVuelo}h (-${decremento}h)`);
+
+      return res.status(400).json({
+        success: false,
+        message: 'No se puede reducir las horas de vuelo de una aeronave',
+        error: {
+          type: 'INVALID_HOURS_DECREMENT',
+          horasActuales: aeronaveExistente.horasVuelo,
+          horasSolicitadas: horasVuelo,
+          decremento: decremento,
+          matricula: aeronaveExistente.matricula,
+          solucion: 'Las horas de vuelo solo pueden incrementarse. Si necesita corregir un error, contacte al administrador del sistema o verifique los datos ingresados.'
+        }
+      });
+    }
+
+    // ✅ VALIDACIÓN: Alertar sobre incrementos muy grandes (posibles errores de captura)
+    const incremento = horasVuelo - aeronaveExistente.horasVuelo;
+    const force = req.query.force === 'true';
+
+    if (incremento > 100 && !force) {
+      logger.warn(`Incremento de horas sospechoso para aeronave ${aeronaveExistente.matricula}: +${incremento}h (${aeronaveExistente.horasVuelo}h → ${horasVuelo}h)`);
+
+      return res.status(400).json({
+        success: false,
+        message: `El incremento de ${incremento} horas parece muy alto. ¿Es correcto?`,
+        error: {
+          type: 'SUSPICIOUS_INCREMENT',
+          horasActuales: aeronaveExistente.horasVuelo,
+          horasNuevas: horasVuelo,
+          incremento: incremento,
+          matricula: aeronaveExistente.matricula,
+          requiereConfirmacion: true,
+          solucion: 'Verifique el valor ingresado. Si el incremento es correcto, agregue el parámetro ?force=true a la URL de la petición para confirmar.'
+        }
+      });
+    }
+
+    // ✅ VALIDACIÓN: Incremento de cero horas (innecesario)
+    if (incremento === 0) {
+      logger.info(`Intento de actualizar horas de aeronave ${aeronaveExistente.matricula} con el mismo valor: ${horasVuelo}h`);
+
+      return res.status(400).json({
+        success: false,
+        message: 'Las horas nuevas son iguales a las actuales. No hay cambios que realizar.',
+        error: {
+          type: 'NO_HOURS_CHANGE',
+          horasActuales: aeronaveExistente.horasVuelo,
+          horasNuevas: horasVuelo,
+          matricula: aeronaveExistente.matricula,
+          solucion: 'Ingrese un valor de horas mayor al actual para realizar la actualización.'
+        }
+      });
+    }
+
+    logger.info(`Incremento de horas validado para aeronave ${aeronaveExistente.matricula}: +${incremento}h (${aeronaveExistente.horasVuelo}h → ${horasVuelo}h)${force ? ' [FORZADO]' : ''}`);
 
     // Ejecutar propagación de horas usando la función robusta
     const resultadoPropagacion = await propagarHorasAComponentes(id, horasVuelo);
