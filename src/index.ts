@@ -109,15 +109,24 @@ app.use(morgan(process.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 const isDevelopment = process.env.NODE_ENV !== 'production';
 const limiter = rateLimit({
   windowMs: isDevelopment ? 1 * 60 * 1000 : 15 * 60 * 1000, // 1 min en dev, 15 min en prod
-  max: isDevelopment ? 1000 : 100, // 1000 requests en dev, 100 en prod
+  max: isDevelopment ? 1000 : 500, // 1000 requests en dev, 500 en prod (aumentado de 100)
   message: {
-    error: 'Too many requests from this IP',
-    retryAfter: isDevelopment ? '1 minute' : '15 minutes'
+    error: 'Demasiadas peticiones desde esta IP',
+    retryAfter: isDevelopment ? '1 minuto' : '15 minutos',
+    suggestion: 'Por favor, espera un momento antes de continuar'
   },
   standardHeaders: true,
   legacyHeaders: false,
-  // Excluir health check del rate limiting
-  skip: (req) => req.path === '/api/health' || req.path === '/'
+  // Excluir health check y endpoints de lectura frecuente del rate limiting
+  skip: (req) => {
+    const excludedPaths = [
+      '/api/health',
+      '/',
+      '/api/inventario', // Permitir lectura de inventario
+      '/api/inventario/stats' // Permitir lectura de estadísticas
+    ];
+    return excludedPaths.some(path => req.path === path || req.path.startsWith(path));
+  }
 });
 app.use(limiter);
 
