@@ -83,7 +83,7 @@ router.post('/componente/:componenteId', async (req: Request, res: Response) => 
     }
 
     // Verificar que el componente existe
-    const componente = await Componente.findById(componenteId);
+    const componente = await Componente.findById(componenteId).populate('aeronaveActual', 'horasVuelo matricula');
     if (!componente) {
       return res.status(404).json({
         success: false,
@@ -113,17 +113,82 @@ router.post('/componente/:componenteId', async (req: Request, res: Response) => 
       });
     }
 
-    // Crear el nuevo estado
+    // ========== CÁLCULO AUTOMÁTICO DE offsetInicial Y valorActual ==========
+    
+    // Determinar si está basado en aeronave (por defecto: true)
+    const usaHorasAeronave = basadoEnAeronave ?? true;
+    
+    // Calcular offsetInicial automáticamente si no se proporciona
+    let offsetCalculado = offsetInicial || 0;
+    let valorActualCalculado = valorActual || 0;
+    
+    if (usaHorasAeronave && componente.aeronaveActual) {
+      // Obtener horas actuales de la aeronave
+      const aeronave = componente.aeronaveActual as any; // Ya está poblado
+      const horasAeronave = aeronave?.horasVuelo || 0;
+      
+      // Obtener horas acumuladas del componente
+      const vidaUtilHoras = componente.vidaUtil.find((vida: any) => vida.unidad === 'HORAS');
+      const horasComponente = vidaUtilHoras?.acumulado || 0;
+      
+      // ⚠️ CRÍTICO: Para componentes nuevos (horasComponente = 0)
+      // offsetInicial debe ser las horas actuales de la aeronave
+      if (horasComponente === 0) {
+        offsetCalculado = horasAeronave;
+        valorActualCalculado = 0; // El componente inicia en 0 horas
+        
+        logger.info(`[ESTADO MONITOREO] 🆕 Componente NUEVO - offsetInicial configurado automáticamente:`, {
+          componenteId: componente._id,
+          numeroSerie: componente.numeroSerie,
+          aeronave: aeronave.matricula,
+          horasAeronave,
+          horasComponente,
+          offsetCalculado,
+          valorActualCalculado
+        });
+      } else {
+        // Para componentes existentes con horas acumuladas
+        // Si no se proporcionó offset, calcularlo desde la diferencia
+        if (offsetInicial === undefined) {
+          offsetCalculado = Number(horasAeronave) - Number(horasComponente);
+        }
+        valorActualCalculado = Number(horasComponente);
+        
+        logger.info(`[ESTADO MONITOREO] ♻️ Componente EXISTENTE - offset calculado:`, {
+          componenteId: componente._id,
+          numeroSerie: componente.numeroSerie,
+          aeronave: aeronave.matricula,
+          horasAeronave,
+          horasComponente,
+          offsetCalculado,
+          valorActualCalculado
+        });
+      }
+    } else {
+      // No está basado en aeronave o no tiene aeronave asignada
+      // Usar el valorActual proporcionado o 0
+      valorActualCalculado = valorActual || 0;
+      offsetCalculado = 0;
+      
+      logger.info(`[ESTADO MONITOREO] 📊 Componente SIN sincronización con aeronave:`, {
+        componenteId: componente._id,
+        numeroSerie: componente.numeroSerie,
+        valorActualCalculado,
+        basadoEnAeronave: usaHorasAeronave
+      });
+    }
+
+    // Crear el nuevo estado con valores calculados
     const nuevoEstado = new EstadoMonitoreoComponente({
       componenteId,
       catalogoControlId,
-      valorActual: valorActual || 0,
+      valorActual: valorActualCalculado,
       valorLimite,
       unidad: unidad || 'HORAS',
       fechaProximaRevision: fechaProximaRevision || new Date(),
       observaciones,
-      basadoEnAeronave: basadoEnAeronave ?? true,
-      offsetInicial: offsetInicial || 0,
+      basadoEnAeronave: usaHorasAeronave,
+      offsetInicial: offsetCalculado,
       configuracionPersonalizada,
       configuracionOverhaul
     });

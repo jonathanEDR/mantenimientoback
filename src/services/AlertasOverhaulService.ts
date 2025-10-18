@@ -56,9 +56,19 @@ export class AlertasOverhaulService {
       throw new Error('Este método solo aplica para componentes con overhauls habilitados');
     }
 
-    // Calcular próximo overhaul basándose en ciclo actual
+    // ========== CALCULAR TSO (TIME SINCE OVERHAUL) ==========
+    // TSO representa las horas transcurridas desde el último overhaul completado
+    // Esto permite que el semáforo se reinicie correctamente en cada ciclo
+    const horasUltimoOverhaul = config.horasUltimoOverhaul || 0;
+    const TSO = estado.valorActual - horasUltimoOverhaul;
+
+    // ========== CALCULAR HORAS RESTANTES HASTA PRÓXIMO OVERHAUL ==========
+    // Se calcula basándose en el intervalo de overhaul, NO en las horas totales
+    // Ejemplo: Si intervalo=50h y TSO=30h → quedan 20h hasta el próximo overhaul
+    const horasRestantesOverhaul = config.intervaloOverhaul - TSO;
+    
+    // Calcular cuándo es el próximo overhaul en términos de horas totales
     const proximoOverhaulEn = (config.cicloActual + 1) * config.intervaloOverhaul;
-    const horasRestantesOverhaul = proximoOverhaulEn - estado.valorActual;
     
     // Obtener umbral de alerta del semáforo (por defecto 50 horas si no hay config)
     const alertaAnticipada = config.semaforoPersonalizado?.umbrales?.rojo || 50;
@@ -69,9 +79,11 @@ export class AlertasOverhaulService {
     
     if (usaSemaforo && config.semaforoPersonalizado) {
       try {
+        // IMPORTANTE: Se pasa horasRestantesOverhaul (basado en TSO) y el intervalo
+        // Esto asegura que el semáforo se reinicia en cada ciclo de overhaul
         semaforo = SemaforoCalculatorService.calcularSemaforo(
-          Math.max(0, horasRestantesOverhaul),
-          config.intervaloOverhaul,
+          horasRestantesOverhaul, // ✅ Basado en TSO - se reinicia cada overhaul
+          config.intervaloOverhaul, // ✅ Límite de referencia (50h, no 100h)
           config.semaforoPersonalizado
         );
       } catch (error) {
@@ -134,7 +146,7 @@ export class AlertasOverhaulService {
       componenteId: estado.componenteId.toString(),
       valorActual: estado.valorActual,
       proximoOverhaulEn,
-      horasRestantesOverhaul: Math.max(0, horasRestantesOverhaul),
+      horasRestantesOverhaul: horasRestantesOverhaul, // ✅ CORREGIDO: Valor real, puede ser negativo
       alertaAnticipadaOverhaul: alertaAnticipada,
       requiereAlerta,
       requiereOverhaul: requiereOverhaulAhora || (componenteVencido && config.cicloActual < config.ciclosOverhaul),

@@ -90,39 +90,56 @@ export class SemaforoCalculatorService {
         nivel = 4;
       }
     } else {
-      // Para horas: La lógica es:
-      // - horasRestantes NEGATIVAS = MORADO (pasó el límite)
-      // - horasRestantes entre 0 y umbral rojo = ROJO
-      // - horasRestantes entre umbral rojo y naranja = NARANJA
-      // - etc.
+      // ========== SISTEMA CORREGIDO: Lógica clara y correcta para HORAS ==========
+      // Los umbrales representan "horas ANTES" del límite para alertar
+      // MORADO se activa cuando se excede el límite por más del umbral configurado
       
-      if (horasRestantes < -umbrales.morado) {
-        // MORADO: Excedió el límite por más del umbral configurado
-        color = 'MORADO';
-        umbralActual = -umbrales.morado;
-        nivel = 0; // Máxima criticidad
-      } else if (horasRestantes <= 0) {
-        // ROJO: Entre 0 y el límite (o justo en el límite)
-        color = 'ROJO';
-        umbralActual = 0;
-        nivel = 1;
-      } else if (horasRestantes <= umbrales.amarillo) {
-        // ROJO: Menos horas que el umbral amarillo
+      if (horasRestantes < 0) {
+        // ========== COMPONENTE VENCIDO (pasó el límite) ==========
+        const horasPasadas = Math.abs(horasRestantes);
+        
+        if (horasPasadas > umbrales.morado) {
+          // 🟣 MORADO: Excedió por MÁS del umbral de tolerancia
+          // Ejemplo: Si umbral morado = 10h y horasRestantes = -11h → MORADO
+          color = 'MORADO';
+          umbralActual = -umbrales.morado;
+          nivel = 0; // Máxima criticidad
+        } else {
+          // 🔴 ROJO: Vencido pero dentro del margen de tolerancia
+          // Ejemplo: Si umbral morado = 10h y horasRestantes = -5h → ROJO
+          color = 'ROJO';
+          umbralActual = 0;
+          nivel = 1;
+        }
+      } 
+      else if (horasRestantes <= umbrales.amarillo) {
+        // ========== CRÍTICO - Quedan muy pocas horas ==========
+        // 🔴 ROJO: Restantes ≤ umbral más bajo (amarillo)
+        // Ejemplo: Si umbral amarillo = 25h y horasRestantes = 10h → ROJO
         color = 'ROJO';
         umbralActual = umbrales.amarillo;
         nivel = 1;
-      } else if (horasRestantes <= umbrales.naranja) {
-        // NARANJA: Entre amarillo y naranja
+      } 
+      else if (horasRestantes <= umbrales.naranja) {
+        // ========== ALTO - Aproximándose ==========
+        // 🟠 NARANJA: Entre umbral amarillo y naranja
+        // Ejemplo: Si umbral naranja = 50h y horasRestantes = 40h → NARANJA
         color = 'NARANJA';
         umbralActual = umbrales.naranja;
         nivel = 2;
-      } else if (horasRestantes <= umbrales.rojo) {
-        // AMARILLO: Entre naranja y rojo
+      } 
+      else if (horasRestantes <= umbrales.rojo) {
+        // ========== MEDIO - Monitorear ==========
+        // 🟡 AMARILLO: Entre umbral naranja y rojo
+        // Ejemplo: Si umbral rojo = 100h y horasRestantes = 80h → AMARILLO
         color = 'AMARILLO';
         umbralActual = umbrales.rojo;
         nivel = 3;
-      } else {
-        // VERDE: Más horas que el umbral rojo
+      } 
+      else {
+        // ========== OK - Suficiente margen ==========
+        // 🟢 VERDE: Más horas que el umbral rojo
+        // Ejemplo: Si umbral rojo = 100h y horasRestantes = 200h → VERDE
         color = 'VERDE';
         umbralActual = umbrales.rojo;
         nivel = 4;

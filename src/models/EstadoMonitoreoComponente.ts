@@ -326,12 +326,13 @@ estadoMonitoreoComponenteSchema.pre('save', async function(next) {
   try {
     let valorActualCalculado = this.valorActual;
 
+    // ========== LÓGICA DE CÁLCULO DE HORAS BASADAS EN AERONAVE ==========
     // Si está basado en aeronave, calcular valor actual desde horas acumuladas del componente
     if (this.basadoEnAeronave && this.isModified('valorActual')) {
       // Obtener las horas acumuladas del componente específico
       const Componente = this.model('Componente');
       const componente = await Componente.findById(this.componenteId)
-        .select('vidaUtil')
+        .select('vidaUtil numeroSerie')
         .lean() as any;
 
       if (componente?.vidaUtil) {
@@ -339,11 +340,27 @@ estadoMonitoreoComponenteSchema.pre('save', async function(next) {
         const vidaUtilHoras = componente.vidaUtil.find((vida: any) => vida.unidad === 'HORAS');
         
         if (vidaUtilHoras) {
-          // Usar las horas acumuladas del componente (desde su instalación)
-          valorActualCalculado = Math.max(0, vidaUtilHoras.acumulado + this.offsetInicial);
+          // ⚠️ CRÍTICO: Para componentes NUEVOS (acumulado = 0)
+          // El valorActual debe permanecer en 0, NO sumar offsetInicial
+          // El offsetInicial solo se usa para sincronización con aeronave
+          
+          const horasComponente = vidaUtilHoras.acumulado || 0;
+          
+          // CORRECCIÓN: NO sumar offsetInicial al valorActual
+          // El valorActual refleja las horas PROPIAS del componente
+          valorActualCalculado = Math.max(0, horasComponente);
 
           // Actualizar el valorActual para mantener consistencia
           this.valorActual = valorActualCalculado;
+          
+          logger.info(`[MIDDLEWARE PRE-SAVE] 📊 Valor actual calculado:`, {
+            componenteId: this.componenteId,
+            numeroSerie: componente.numeroSerie,
+            horasComponente,
+            offsetInicial: this.offsetInicial,
+            valorActualCalculado,
+            esComponenteNuevo: horasComponente === 0
+          });
         }
       }
     }
