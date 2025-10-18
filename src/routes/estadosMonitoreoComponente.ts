@@ -53,6 +53,74 @@ router.get('/componente/:componenteId', async (req: Request, res: Response) => {
   }
 });
 
+// Obtener estados de monitoreo para múltiples componentes (batch)
+router.post('/batch', async (req: Request, res: Response) => {
+  try {
+    const { componenteIds } = req.body;
+
+    // Validar que componenteIds sea un array
+    if (!Array.isArray(componenteIds)) {
+      return res.status(400).json({
+        success: false,
+        message: 'componenteIds debe ser un array'
+      });
+    }
+
+    // Validar que todos los IDs sean válidos
+    const idsValidos = componenteIds.every(id => Types.ObjectId.isValid(id));
+    if (!idsValidos) {
+      return res.status(400).json({
+        success: false,
+        message: 'Uno o más IDs de componente son inválidos'
+      });
+    }
+
+    // CACHÉ INTELIGENTE - 30 segundos para reducir carga en BD
+    res.set({
+      'Cache-Control': 'public, max-age=30',
+      'Vary': 'Accept-Encoding'
+    });
+    
+    // OPTIMIZACIÓN: Usar .lean() y consulta $in para cargar múltiples estados en una sola query
+    // Esto elimina el problema N+1 que causaba lentitud en PDF exports
+    const estados = await EstadoMonitoreoComponente
+      .find({ componenteId: { $in: componenteIds } })
+      .populate('catalogoControlId', 'descripcionCodigo horaInicial horaFinal')
+      .populate('componenteId', 'numeroSerie nombre categoria')
+      .sort({ componenteId: 1, fechaProximaRevision: 1 })
+      .lean() // ✅ Retorna objetos JS planos, no documentos Mongoose
+      .exec();
+    
+    // Agrupar estados por componenteId para fácil acceso en frontend
+    const estadosPorComponente: Record<string, any[]> = {};
+    estados.forEach((estado: any) => {
+      const compId = estado.componenteId?._id?.toString() || estado.componenteId?.toString();
+      if (!estadosPorComponente[compId]) {
+        estadosPorComponente[compId] = [];
+      }
+      estadosPorComponente[compId].push(estado);
+    });
+    
+    res.json({
+      success: true,
+      data: estadosPorComponente,
+      timestamp: new Date().toISOString(),
+      stats: {
+        componentesConsultados: componenteIds.length,
+        estadosEncontrados: estados.length
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error al obtener estados de monitoreo en batch:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
 // Crear nuevo estado de monitoreo para un componente
 router.post('/componente/:componenteId', async (req: Request, res: Response) => {
   try {
@@ -180,6 +248,38 @@ router.post('/componente/:componenteId', async (req: Request, res: Response) => 
       });
     }
 
+    // ========== CONFIGURACIÓN AUTOMÁTICA DE UMBRALES PARA OVERHAUL ==========
+    let configuracionOverhaulFinal = configuracionOverhaul;
+    
+    if (configuracionOverhaul?.habilitarOverhaul && configuracionOverhaul.intervaloOverhaul) {
+      const { calcularUmbralesParaOverhaul, validarYCorregirUmbralesOverhaul } = require('../utils/overhaulUmbrales');
+      
+      // Si tiene semáforo personalizado configurado, validarlo y corregirlo si es necesario
+      if (configuracionOverhaul.semaforoPersonalizado) {
+        configuracionOverhaulFinal.semaforoPersonalizado = validarYCorregirUmbralesOverhaul(
+          configuracionOverhaul.semaforoPersonalizado,
+          configuracionOverhaul.intervaloOverhaul,
+          valorLimite
+        );
+        
+        logger.info(`[CREAR ESTADO] ✅ Umbrales validados y corregidos para overhaul`, {
+          intervaloOverhaul: configuracionOverhaul.intervaloOverhaul,
+          umbrales: configuracionOverhaulFinal.semaforoPersonalizado?.umbrales
+        });
+      } else {
+        // Si no tiene semáforo configurado, crear uno automáticamente
+        configuracionOverhaulFinal.semaforoPersonalizado = calcularUmbralesParaOverhaul(
+          configuracionOverhaul.intervaloOverhaul,
+          'ESTANDAR'
+        );
+        
+        logger.info(`[CREAR ESTADO] 🆕 Umbrales calculados automáticamente para overhaul`, {
+          intervaloOverhaul: configuracionOverhaul.intervaloOverhaul,
+          umbrales: configuracionOverhaulFinal.semaforoPersonalizado.umbrales
+        });
+      }
+    }
+
     // Crear el nuevo estado con valores calculados
     const nuevoEstado = new EstadoMonitoreoComponente({
       componenteId,
@@ -192,7 +292,7 @@ router.post('/componente/:componenteId', async (req: Request, res: Response) => 
       basadoEnAeronave: usaHorasAeronave,
       offsetInicial: offsetCalculado,
       configuracionPersonalizada,
-      configuracionOverhaul
+      configuracionOverhaul: configuracionOverhaulFinal
     });
 
     await nuevoEstado.save();
@@ -268,9 +368,43 @@ router.put('/:estadoId', async (req: Request, res: Response) => {
       };
     }
     if (configuracionOverhaul !== undefined) {
+      // ========== VALIDAR Y CORREGIR UMBRALES SI ES NECESARIO ==========
+      let configuracionOverhaulFinal = configuracionOverhaul;
+      
+      if (configuracionOverhaul.habilitarOverhaul && configuracionOverhaul.intervaloOverhaul) {
+        const { calcularUmbralesParaOverhaul, validarYCorregirUmbralesOverhaul } = require('../utils/overhaulUmbrales');
+        
+        // Si tiene semáforo personalizado configurado, validarlo y corregirlo
+        if (configuracionOverhaul.semaforoPersonalizado) {
+          configuracionOverhaulFinal.semaforoPersonalizado = validarYCorregirUmbralesOverhaul(
+            configuracionOverhaul.semaforoPersonalizado,
+            configuracionOverhaul.intervaloOverhaul,
+            valorLimite || estado.valorLimite
+          );
+          
+          logger.info(`[ACTUALIZAR ESTADO] ✅ Umbrales validados y corregidos`, {
+            estadoId,
+            intervaloOverhaul: configuracionOverhaul.intervaloOverhaul,
+            umbrales: configuracionOverhaulFinal.semaforoPersonalizado?.umbrales
+          });
+        } else {
+          // Si no tiene semáforo configurado, crear uno automáticamente
+          configuracionOverhaulFinal.semaforoPersonalizado = calcularUmbralesParaOverhaul(
+            configuracionOverhaul.intervaloOverhaul,
+            'ESTANDAR'
+          );
+          
+          logger.info(`[ACTUALIZAR ESTADO] 🆕 Umbrales calculados automáticamente`, {
+            estadoId,
+            intervaloOverhaul: configuracionOverhaul.intervaloOverhaul,
+            umbrales: configuracionOverhaulFinal.semaforoPersonalizado.umbrales
+          });
+        }
+      }
+      
       estado.configuracionOverhaul = {
         ...estado.configuracionOverhaul,
-        ...configuracionOverhaul
+        ...configuracionOverhaulFinal
       };
     }
 
@@ -538,30 +672,38 @@ router.post('/:estadoId/completar-overhaul', async (req: Request, res: Response)
       });
     }
 
-    // Obtener horas actuales de la aeronave para el cálculo
-    let horasActuales = estado.valorActual;
-    if (estado.basadoEnAeronave) {
-      const componente = await Componente.findById(estado.componenteId)
-        .populate('aeronaveActual', 'horasVuelo')
-        .lean();
-
-      if (componente && componente.aeronaveActual && typeof componente.aeronaveActual === 'object') {
-        horasActuales = Math.max(0, (componente.aeronaveActual as any).horasVuelo - estado.offsetInicial);
-      }
-    }
+    // Obtener horas actuales DEL COMPONENTE para el cálculo
+    // ❌ PROBLEMA ANTERIOR: Usaba horas de la aeronave completa
+    // ✅ SOLUCIÓN: Usar el valorActual del estado del componente
+    const horasActualesComponente = estado.valorActual;
+    
+    logger.info(`[OVERHAUL] 📊 Completando overhaul para componente:`, {
+      componenteId: estado.componenteId,
+      valorActualComponente: horasActualesComponente,
+      cicloAnterior: estado.configuracionOverhaul.cicloActual,
+      intervaloOverhaul: estado.configuracionOverhaul.intervaloOverhaul
+    });
 
     // Actualizar configuración de overhaul
     const configOverhaul = estado.configuracionOverhaul;
     const cicloAnterior = configOverhaul.cicloActual;
     
     configOverhaul.cicloActual += 1;
-    configOverhaul.horasUltimoOverhaul = horasActuales;
+    // ✅ CORRECCIÓN CRÍTICA: Usar horas del componente, no de la aeronave
+    configOverhaul.horasUltimoOverhaul = horasActualesComponente;
     configOverhaul.requiereOverhaul = false;
     configOverhaul.fechaUltimoOverhaul = new Date();
     
     // Calcular el próximo overhaul basándose en el nuevo ciclo
     const siguienteOverhaul = (configOverhaul.cicloActual + 1) * configOverhaul.intervaloOverhaul;
     configOverhaul.proximoOverhaulEn = siguienteOverhaul;
+
+    logger.info(`[OVERHAUL] ✅ Overhaul completado:`, {
+      cicloNuevo: configOverhaul.cicloActual,
+      horasUltimoOverhaul: configOverhaul.horasUltimoOverhaul,
+      proximoOverhaulEn: configOverhaul.proximoOverhaulEn,
+      TSO_reiniciado: horasActualesComponente - configOverhaul.horasUltimoOverhaul
+    });
 
     if (observaciones) {
       configOverhaul.observacionesOverhaul = observaciones;

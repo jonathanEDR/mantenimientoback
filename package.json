@@ -16,7 +16,18 @@
     "status": "ts-node src/scripts/quickStatus.ts",
     "test-registration": "ts-node src/scripts/testRegistration.ts",
     "test-endpoint": "ts-node src/scripts/testEndpoint.ts",
-    "diagnostico-inventario": "node scripts/diagnostico-inventario.js"
+    "diagnostico-inventario": "node scripts/diagnostico-inventario.js",
+    "corregir-overhauls": "ts-node src/scripts/corregirOverhauls.ts",
+    "validar-overhauls": "ts-node src/scripts/corregirOverhauls.ts --validar",
+    "verificar-correccion": "ts-node src/scripts/verificarCorreccion.ts",
+    "simular-semaforo": "ts-node src/scripts/simularSemaforo.ts",
+    "analizar-problematico": "ts-node src/scripts/analizarProblematico.ts",
+    "analizar-post-overhaul": "ts-node src/scripts/analizarPostOverhaul.ts",
+    "buscar-trraa": "ts-node src/scripts/buscarTRRaa.ts",
+    "buscar-tso-cero": "ts-node src/scripts/buscarTSOCero.ts",
+    "debug-componente-especifico": "ts-node src/scripts/debugComponenteEspecifico.ts",
+    "propuestas-umbrales": "ts-node src/scripts/propuestasUmbrales.ts",
+    "actualizar-umbrales": "ts-node src/scripts/actualizarUmbrales.ts"
   },
   "dependencies": {
     "@clerk/clerk-sdk-node": "^4.13.23",

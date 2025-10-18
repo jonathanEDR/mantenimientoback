@@ -65,11 +65,11 @@ export const CONFIGURACIONES_SEMAFORO_PREDEFINIDAS: Record<string, ISemaforoPers
     habilitado: true,
     unidad: 'HORAS',
     umbrales: {
-      morado: 100,  // 100h DESPUÉS del límite - sobre-crítico
-      rojo: 100,    // 100h antes - crítico
-      naranja: 50,  // 50h antes - alto
-      amarillo: 25, // 25h antes - medio  
-      verde: 0      // 0h antes - ok
+      morado: 10,  // 10h DESPUÉS del límite - sobre-crítico
+      rojo: 20,    // 20h antes - crítico (VERDE cuando > 20h)
+      naranja: 15, // 15h antes - alto
+      amarillo: 10,// 10h antes - medio  
+      verde: 0     // 0h antes - ok
     },
     descripciones: {
       morado: 'SOBRE-CRÍTICO - Componente vencido en uso',
@@ -84,11 +84,11 @@ export const CONFIGURACIONES_SEMAFORO_PREDEFINIDAS: Record<string, ISemaforoPers
     habilitado: true,
     unidad: 'HORAS',
     umbrales: {
-      morado: 50,   // 50h después - sobre-crítico (más estricto)
-      rojo: 150,    // Más conservador - 150h antes
-      naranja: 100,
-      amarillo: 50,
-      verde: 25
+      morado: 15,   // 15h después - sobre-crítico (más estricto)
+      rojo: 30,     // Más conservador - 30h antes (VERDE cuando > 30h)
+      naranja: 25,
+      amarillo: 15,
+      verde: 0
     },
     descripciones: {
       morado: 'SOBRE-CRÍTICO - ¡Detener operación!',
@@ -103,10 +103,10 @@ export const CONFIGURACIONES_SEMAFORO_PREDEFINIDAS: Record<string, ISemaforoPers
     habilitado: true,
     unidad: 'HORAS', 
     umbrales: {
-      morado: 200,  // 200h después - más tolerante
-      rojo: 50,     // Menos conservador - 50h antes
-      naranja: 25,
-      amarillo: 10,
+      morado: 5,    // 5h después - más tolerante al vencimiento
+      rojo: 10,     // Menos conservador - 10h antes (VERDE cuando > 10h)
+      naranja: 8,
+      amarillo: 5,
       verde: 0
     },
     descripciones: {
