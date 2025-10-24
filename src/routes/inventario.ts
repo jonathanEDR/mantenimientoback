@@ -639,12 +639,40 @@ router.put('/:id/horas-con-propagacion', requireAuth, async (req, res) => {
     }
 
     // Actualizar la aeronave solo si la propagación fue exitosa
+    const updateData: any = { horasVuelo };
+    
+    // Agregar observación si se proporciona
+    if (observacion !== undefined) {
+      updateData.observaciones = observacion;
+    }
+    
+    // Crear entrada para el historial de observaciones
+    const nuevaEntradaHistorial = {
+      fecha: new Date(),
+      texto: `Horas actualizadas de ${aeronaveExistente.horasVuelo}h a ${horasVuelo}h (+${horasVuelo - aeronaveExistente.horasVuelo}h)${observacion ? ` - ${observacion}` : ''}`,
+      usuario: (req as any).user?.userId || 'Sistema',
+      tipo: 'horas_actualizadas' as const
+    };
+    
+    // Crear entrada específica para el historial de horas de vuelo
+    const nuevaEntradaHoras = {
+      fecha: new Date(),
+      horasAnteriores: aeronaveExistente.horasVuelo,
+      horasNuevas: horasVuelo,
+      incremento: horasVuelo - aeronaveExistente.horasVuelo,
+      usuario: (req as any).user?.userId || 'Sistema',
+      observacion: observacion || undefined,
+      motivo: 'vuelo_operacional' as const
+    };
+    
+    updateData.$push = {
+      historialObservaciones: nuevaEntradaHistorial,
+      historialHorasVuelo: nuevaEntradaHoras
+    };
+
     const aeronaveActualizada = await Aeronave.findByIdAndUpdate(
       id,
-      {
-        horasVuelo,
-        ...(observacion !== undefined && { observaciones: observacion })
-      },
+      updateData,
       { new: true, runValidators: true }
     );
 
@@ -740,9 +768,22 @@ router.put('/:id/estado', requireAuth, async (req, res) => {
 
     const estadoAnterior = aeronaveExistente.estado;
 
+    // Crear entrada para el historial del cambio de estado
+    const nuevaEntradaHistorial = {
+      fecha: new Date(),
+      texto: `Estado cambiado de "${estadoAnterior}" a "${estado}"`,
+      usuario: (req as any).user?.userId || 'Sistema',
+      tipo: 'cambio_estado' as const
+    };
+
     const aeronaveActualizada = await Aeronave.findByIdAndUpdate(
       id,
-      { estado },
+      { 
+        estado,
+        $push: {
+          historialObservaciones: nuevaEntradaHistorial
+        }
+      },
       { new: true, runValidators: true }
     );
 
@@ -798,9 +839,26 @@ router.put('/:id/observaciones', requireAuth, async (req, res) => {
 
     const observacionesAnteriores = aeronaveExistente.observaciones;
 
+    // Crear entrada para el historial si hay observaciones nuevas
+    const updateData: any = { observaciones: observaciones || '' };
+    
+    if (observaciones && observaciones.trim() !== '') {
+      const nuevaEntradaHistorial = {
+        fecha: new Date(),
+        texto: observaciones.trim(),
+        usuario: (req as any).user?.userId || 'Sistema',
+        tipo: 'observacion' as const
+      };
+      
+      // Agregar al historial
+      updateData.$push = {
+        historialObservaciones: nuevaEntradaHistorial
+      };
+    }
+
     const aeronaveActualizada = await Aeronave.findByIdAndUpdate(
       id,
-      { observaciones: observaciones || '' },
+      updateData,
       { new: true, runValidators: true }
     );
 
@@ -880,6 +938,134 @@ const invalidateStatsCache = () => {
   inventarioStatsCacheTime = 0;
   inventarioStatsCache = null;
 };
+
+// Obtener historial de horas de vuelo de una aeronave
+router.get('/:aeronaveId/historial-horas-vuelo', requireAuth, requirePermission('VIEW_INVENTORY'), async (req, res) => {
+  try {
+    const { aeronaveId } = req.params;
+    const { limite = 50, motivo } = req.query;
+
+    // Verificar que la aeronave existe
+    const aeronave = await Aeronave.findById(aeronaveId)
+      .select('matricula modelo tipo horasVuelo historialHorasVuelo')
+      .lean();
+
+    if (!aeronave) {
+      return res.status(404).json({
+        success: false,
+        message: 'Aeronave no encontrada'
+      });
+    }
+
+    let historial = aeronave.historialHorasVuelo || [];
+
+    // Filtrar por motivo si se especifica
+    if (motivo && typeof motivo === 'string') {
+      historial = historial.filter((entrada: any) => entrada.motivo === motivo);
+    }
+
+    // Ordenar por fecha descendente (más recientes primero)
+    historial.sort((a: any, b: any) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
+
+    // Limitar resultados
+    const limiteParsed = parseInt(limite as string, 10);
+    if (!isNaN(limiteParsed) && limiteParsed > 0) {
+      historial = historial.slice(0, limiteParsed);
+    }
+
+    // Calcular estadísticas del historial
+    const totalIncrementos = historial.reduce((sum: number, entrada: any) => sum + Math.max(0, entrada.incremento), 0);
+    const promedioIncremento = historial.length > 0 ? totalIncrementos / historial.filter((e: any) => e.incremento > 0).length : 0;
+
+    res.json({
+      success: true,
+      data: {
+        aeronave: {
+          _id: aeronave._id,
+          matricula: aeronave.matricula,
+          modelo: aeronave.modelo,
+          tipo: aeronave.tipo,
+          horasActuales: aeronave.horasVuelo
+        },
+        historial: historial,
+        estadisticas: {
+          totalRegistros: historial.length,
+          totalHorasAcumuladas: totalIncrementos,
+          promedioIncrementoPorVuelo: Math.round(promedioIncremento * 100) / 100,
+          ultimoIncremento: historial.length > 0 ? historial[0].incremento : 0
+        }
+      },
+      message: 'Historial de horas de vuelo obtenido exitosamente'
+    });
+
+  } catch (error) {
+    logger.error('Error al obtener historial de horas de vuelo:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// Obtener historial de observaciones de una aeronave
+router.get('/:aeronaveId/historial-observaciones', requireAuth, requirePermission('VIEW_INVENTORY'), async (req, res) => {
+  try {
+    const { aeronaveId } = req.params;
+    const { limite = 50, tipo } = req.query;
+
+    // Verificar que la aeronave existe
+    const aeronave = await Aeronave.findById(aeronaveId)
+      .select('matricula modelo tipo historialObservaciones')
+      .lean();
+
+    if (!aeronave) {
+      return res.status(404).json({
+        success: false,
+        message: 'Aeronave no encontrada'
+      });
+    }
+
+    let historial = aeronave.historialObservaciones || [];
+
+    // Filtrar por tipo si se especifica
+    if (tipo && typeof tipo === 'string') {
+      historial = historial.filter((obs: any) => obs.tipo === tipo);
+    }
+
+    // Ordenar por fecha descendente (más recientes primero)
+    historial.sort((a: any, b: any) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
+
+    // Limitar resultados
+    const limiteParsed = parseInt(limite as string, 10);
+    if (!isNaN(limiteParsed) && limiteParsed > 0) {
+      historial = historial.slice(0, limiteParsed);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        aeronave: {
+          _id: aeronave._id,
+          matricula: aeronave.matricula,
+          modelo: aeronave.modelo,
+          tipo: aeronave.tipo
+        },
+        historial: historial,
+        total: historial.length
+      },
+      message: 'Historial de observaciones obtenido exitosamente'
+    });
+
+  } catch (error) {
+    logger.error('Error al obtener historial de observaciones de aeronave:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
 
 // Hook para invalidar cache en operaciones de escritura
 router.use((req, res, next) => {

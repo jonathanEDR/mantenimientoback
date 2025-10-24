@@ -178,6 +178,7 @@ router.put('/:id/role',
           name: usuario.name,
           email: usuario.email,
           role: usuario.role,
+          clerkId: usuario.clerkId,
           updatedBy: managerInfo.email,
           updatedAt: new Date()
         },
@@ -186,6 +187,13 @@ router.put('/:id/role',
           newRole,
           changedBy: managerInfo.email,
           reason: reason || 'No especificado'
+        },
+        // NUEVA FUNCIONALIDAD: Información adicional para el frontend
+        updateInfo: {
+          shouldRefreshCache: true,
+          affectedUserId: usuario._id.toString(),
+          affectedUserClerkId: usuario.clerkId,
+          timestamp: new Date().toISOString()
         }
       });
 

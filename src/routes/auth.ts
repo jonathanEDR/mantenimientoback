@@ -32,24 +32,48 @@ router.post('/register', async (req, res) => {
 
     const { name, email, clerkId, role } = registerSchema.parse(parsedBody);
 
-    // Verificar si el usuario ya existe
-  const existingUser = await User.findOne({ clerkId });
+    console.log(`🔍 [AUTH/REGISTER] Registrando usuario - ClerkId: ${clerkId}, Email: ${email}`);
+
+    // Verificar si el usuario ya existe por clerkId o email
+    let existingUser = await User.findOne({ clerkId });
+    
     if (existingUser) {
+      console.log(`✅ [AUTH/REGISTER] Usuario ya existe por clerkId: ${email}`);
       return res.status(200).json({
         message: 'Usuario ya registrado',
         user: existingUser
       });
     }
 
+    // Verificar si existe por email (caso de clerkId desactualizado)
+    existingUser = await User.findOne({ email });
+    if (existingUser) {
+      console.log(`🔄 [AUTH/REGISTER] Usuario existe por email, actualizando clerkId: ${email}`);
+      existingUser.clerkId = clerkId;
+      existingUser.name = name; // Actualizar nombre también
+      existingUser.updatedBy = 'auth-register';
+      await existingUser.save();
+      
+      return res.status(200).json({
+        message: 'Usuario sincronizado exitosamente',
+        user: existingUser
+      });
+    }
+
     // Crear nuevo usuario
+    console.log(`➕ [AUTH/REGISTER] Creando nuevo usuario: ${email}`);
     const user = new User({
       clerkId,
       name,
       email,
-      role: role || UserRole.ESPECIALISTA // Rol por defecto si no se especifica
+      role: role || UserRole.ESPECIALISTA, // Rol por defecto si no se especifica
+      isActive: true,
+      createdBy: 'auth-register'
     });
 
-  await user.save();
+    await user.save();
+    console.log(`✅ [AUTH/REGISTER] Usuario creado exitosamente: ${email} (${user.role})`);
+    
     res.status(201).json({
       message: 'Usuario registrado exitosamente',
       user
@@ -68,14 +92,38 @@ router.post('/register', async (req, res) => {
 router.get('/me', requireAuth, async (req, res) => {
   try {
     const clerkId = (req as any).user.sub;
-    const user = await User.findOne({ clerkId });
+    const clerkEmail = (req as any).user.email;
+    
+    console.log(`🔍 [AUTH/ME] Buscando usuario - ClerkId: ${clerkId}, Email: ${clerkEmail}`);
+    
+    // 1. Buscar primero por clerkId (caso normal)
+    let user = await User.findOne({ clerkId });
 
+    // 2. Si no existe por clerkId, buscar por email (usuario existente con clerkId desactualizado)
+    if (!user && clerkEmail) {
+      console.log(`⚠️ [AUTH/ME] Usuario no encontrado por clerkId, buscando por email: ${clerkEmail}`);
+      user = await User.findOne({ email: clerkEmail });
+      
+      // 3. Si existe por email, actualizar el clerkId
+      if (user) {
+        console.log(`🔄 [AUTH/ME] Usuario encontrado por email, actualizando clerkId de ${user.clerkId} a ${clerkId}`);
+        user.clerkId = clerkId;
+        user.updatedBy = 'auth-sync';
+        await user.save();
+        console.log(`✅ [AUTH/ME] ClerkId actualizado exitosamente para ${clerkEmail}`);
+      }
+    }
+
+    // 4. Si aún no existe, retornar 404 para que el frontend registre al usuario
     if (!user) {
+      console.log(`❌ [AUTH/ME] Usuario no encontrado - ClerkId: ${clerkId}, Email: ${clerkEmail}`);
       return res.status(404).json({ error: 'Usuario no encontrado' });
     }
 
+    console.log(`✅ [AUTH/ME] Usuario encontrado: ${user.email} (${user.role})`);
     res.json({ user });
   } catch (error) {
+    console.error('❌ [AUTH/ME] Error:', (error as Error).message);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });

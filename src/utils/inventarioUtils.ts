@@ -243,7 +243,7 @@ export async function propagarHorasAComponentes(
  * @returns true si el estado es válido
  */
 export function validarEstadoAeronave(estado: string): boolean {
-  const estadosValidos = ['Operativo', 'En Mantenimiento', 'Fuera de Servicio', 'En Reparación'];
+  const estadosValidos = ['Operativo', 'En Mantenimiento', 'Fuera de Servicio', 'En Reparación', 'Inoperativo por Reportaje'];
   return estadosValidos.includes(estado);
 }
 
