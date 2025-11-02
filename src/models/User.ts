@@ -4,7 +4,7 @@ import { Schema, model } from 'mongoose';
 export enum UserRole {
   ADMINISTRADOR = 'ADMINISTRADOR',
   MECANICO = 'MECANICO',
-  COPILOTO = 'COPILOTO',
+  PILOTO = 'PILOTO',
   ESPECIALISTA = 'ESPECIALISTA'
 }
 

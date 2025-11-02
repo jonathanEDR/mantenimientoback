@@ -10,7 +10,7 @@ const registerSchema = z.object({
   name: z.string().min(1),
   email: z.string().email(),
   clerkId: z.string().min(1), // Clerk ID es requerido
-  role: z.enum([UserRole.ADMINISTRADOR, UserRole.MECANICO, UserRole.COPILOTO, UserRole.ESPECIALISTA]).optional()
+  role: z.enum([UserRole.ADMINISTRADOR, UserRole.MECANICO, UserRole.PILOTO, UserRole.ESPECIALISTA]).optional()
 });
 
 // Endpoint para registro inicial (después de Clerk signup)

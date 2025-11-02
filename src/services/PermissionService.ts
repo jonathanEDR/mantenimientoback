@@ -163,7 +163,7 @@ export class PermissionService {
       [UserRole.ADMINISTRADOR]: { level: 4, description: 'Acceso administrativo completo' },
       [UserRole.MECANICO]: { level: 3, description: 'Gestión de mantenimiento y componentes' },
       [UserRole.ESPECIALISTA]: { level: 2, description: 'Inspecciones y análisis especializado' },
-      [UserRole.COPILOTO]: { level: 1, description: 'Acceso de consulta operativa' }
+      [UserRole.PILOTO]: { level: 1, description: 'Acceso de consulta operativa' }
     };
     
     return hierarchies[role];

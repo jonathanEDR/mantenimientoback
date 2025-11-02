@@ -27,7 +27,8 @@
     "buscar-tso-cero": "ts-node src/scripts/buscarTSOCero.ts",
     "debug-componente-especifico": "ts-node src/scripts/debugComponenteEspecifico.ts",
     "propuestas-umbrales": "ts-node src/scripts/propuestasUmbrales.ts",
-    "actualizar-umbrales": "ts-node src/scripts/actualizarUmbrales.ts"
+    "actualizar-umbrales": "ts-node src/scripts/actualizarUmbrales.ts",
+    "verificar-horas-roles": "ts-node src/scripts/verificarActualizacionHoras.ts"
   },
   "dependencies": {
     "@clerk/clerk-sdk-node": "^4.13.23",

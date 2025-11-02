@@ -4,6 +4,7 @@ import { EstadoMonitoreoComponente, IEstadoMonitoreoComponente } from '../models
 import { CatalogoControlMonitoreo } from '../models/CatalogoControlMonitoreo';
 import Componente from '../models/Componente';
 import { MonitoreoGranularService } from '../services/MonitoreoGranularService';
+import { requireAuth } from '../middleware/clerkAuth';
 import logger from '../utils/logger';
 
 const router = Router();
@@ -868,6 +869,105 @@ router.get('/:estadoId/alerta-overhaul', async (req: Request, res: Response) => 
 
   } catch (error) {
     logger.error('Error al calcular alerta de overhaul:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// GET /:estadoId/historial-observaciones - Obtener historial de observaciones de un estado específico
+router.get('/:estadoId/historial-observaciones', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { estadoId } = req.params;
+    const { limite = 50, tipo } = req.query;
+
+    if (!Types.ObjectId.isValid(estadoId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'ID de estado inválido'
+      });
+    }
+
+    // Obtener el estado de monitoreo
+    const estado = await EstadoMonitoreoComponente.findById(estadoId)
+      .populate('componenteId', 'numeroSerie nombre categoria')
+      .populate('catalogoControlId', 'descripcionCodigo')
+      .lean();
+
+    if (!estado) {
+      return res.status(404).json({
+        success: false,
+        message: 'Estado de monitoreo no encontrado'
+      });
+    }
+
+    // El historial de observaciones puede venir de:
+    // 1. Las observaciones del estado mismo
+    // 2. El historial de observaciones del componente (si existe)
+    let historial: any[] = [];
+
+    // Agregar observación actual del estado si existe
+    if (estado.observaciones) {
+      historial.push({
+        _id: `${estado._id}_actual`,
+        tipo: 'MONITOREO',
+        observacion: estado.observaciones,
+        fecha: estado.fechaUltimaActualizacion,
+        usuario: 'Sistema', // Por ahora, después se puede mejorar con tracking de usuarios
+        estado: estado.estado,
+        valorActual: estado.valorActual,
+        valorLimite: estado.valorLimite
+      });
+    }
+
+    // Agregar observaciones de overhaul si existen
+    if (estado.configuracionOverhaul?.observacionesOverhaul) {
+      historial.push({
+        _id: `${estado._id}_overhaul`,
+        tipo: 'OVERHAUL',
+        observacion: estado.configuracionOverhaul.observacionesOverhaul,
+        fecha: estado.configuracionOverhaul.fechaUltimoOverhaul || estado.fechaUltimaActualizacion,
+        usuario: 'Técnico', // Por ahora, después se puede mejorar
+        ciclo: estado.configuracionOverhaul.cicloActual,
+        horasUltimoOverhaul: estado.configuracionOverhaul.horasUltimoOverhaul
+      });
+    }
+
+    // Filtrar por tipo si se especifica
+    if (tipo && typeof tipo === 'string') {
+      historial = historial.filter(obs => obs.tipo === tipo);
+    }
+
+    // Ordenar por fecha descendente (más recientes primero)
+    historial.sort((a, b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
+
+    // Limitar resultados
+    const limiteParsed = parseInt(limite as string, 10);
+    if (!isNaN(limiteParsed) && limiteParsed > 0) {
+      historial = historial.slice(0, limiteParsed);
+    }
+
+    res.json({
+      success: true,
+      data: {
+        estado: {
+          _id: estado._id,
+          componenteInfo: estado.componenteId,
+          catalogoInfo: estado.catalogoControlId,
+          valorActual: estado.valorActual,
+          valorLimite: estado.valorLimite,
+          unidad: estado.unidad,
+          estado: estado.estado
+        },
+        historial,
+        totalRegistros: historial.length
+      }
+    });
+
+  } catch (error) {
+    logger.error('Error al obtener historial de observaciones del estado:', error);
     res.status(500).json({
       success: false,
       message: 'Error interno del servidor',

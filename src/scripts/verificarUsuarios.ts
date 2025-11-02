@@ -49,7 +49,7 @@ async function verificarUsuarios() {
         [UserRole.ADMINISTRADOR]: 0,
         [UserRole.MECANICO]: 0,
         [UserRole.ESPECIALISTA]: 0,
-        [UserRole.COPILOTO]: 0
+        [UserRole.PILOTO]: 0
       },
       sinClerkId: 0,
       sinEmail: 0,
@@ -113,7 +113,7 @@ async function verificarUsuarios() {
     console.log(`  🔑 Administradores:  ${stats.porRol[UserRole.ADMINISTRADOR]}`);
     console.log(`  🔧 Mecánicos:        ${stats.porRol[UserRole.MECANICO]}`);
     console.log(`  📋 Especialistas:    ${stats.porRol[UserRole.ESPECIALISTA]}`);
-    console.log(`  ✈️  Copilotos:        ${stats.porRol[UserRole.COPILOTO]}\n`);
+    console.log(`  ✈️  Pilotos:          ${stats.porRol[UserRole.PILOTO]}\n`);
 
     if (stats.sinClerkId > 0 || stats.sinEmail > 0) {
       console.log('⚠️  PROBLEMAS DE INTEGRIDAD:');

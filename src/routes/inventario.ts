@@ -1,6 +1,7 @@
 import express from 'express';
 import Aeronave from '../models/Aeronave';
 import Componente from '../models/Componente';
+import User from '../models/User';
 import { requireAuth } from '../middleware/clerkAuth';
 import { requirePermission } from '../middleware/roleAuth';
 import logger from '../utils/logger';
@@ -541,7 +542,7 @@ router.delete('/:id', requireAuth, requirePermission('DELETE_INVENTORY'), async 
 });
 
 // PUT /api/inventario/:id/horas-con-propagacion - Actualizar horas con propagación a componentes
-router.put('/:id/horas-con-propagacion', requireAuth, async (req, res) => {
+router.put('/:id/horas-con-propagacion', requireAuth, requirePermission('UPDATE_FLIGHT_HOURS'), async (req, res) => {
   try {
     const { id } = req.params;
     const { horasVuelo, observacion } = req.body;
@@ -737,7 +738,7 @@ router.put('/:id/horas-con-propagacion', requireAuth, async (req, res) => {
 router.put('/:id/estado', requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
-    const { estado } = req.body;
+    const { estado, observaciones } = req.body;
     
     logger.info(`Actualizando estado de aeronave ID: ${id} a: ${estado}`);
 
@@ -757,6 +758,14 @@ router.put('/:id/estado', requireAuth, async (req, res) => {
       });
     }
 
+    // Para "Inoperativo por Reportaje", las observaciones son requeridas
+    if (estado === 'Inoperativo por Reportaje' && !observaciones?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Las observaciones son requeridas cuando se reporta una aeronave como inoperativa'
+      });
+    }
+
     // Verificar si la aeronave existe
     const aeronaveExistente = await Aeronave.findById(id);
     if (!aeronaveExistente) {
@@ -768,22 +777,43 @@ router.put('/:id/estado', requireAuth, async (req, res) => {
 
     const estadoAnterior = aeronaveExistente.estado;
 
+    // Preparar datos de actualización
+    const updateData: any = { estado };
+    const historialEntradas: any[] = [];
+
     // Crear entrada para el historial del cambio de estado
-    const nuevaEntradaHistorial = {
+    const entradaCambioEstado = {
       fecha: new Date(),
       texto: `Estado cambiado de "${estadoAnterior}" a "${estado}"`,
       usuario: (req as any).user?.userId || 'Sistema',
       tipo: 'cambio_estado' as const
     };
+    historialEntradas.push(entradaCambioEstado);
+
+    // Si se incluyen observaciones, actualizarlas también
+    if (observaciones !== undefined) {
+      updateData.observaciones = observaciones;
+      
+      // Agregar entrada al historial solo si las observaciones no están vacías
+      if (observaciones.trim()) {
+        const entradaObservacion = {
+          fecha: new Date(),
+          texto: observaciones,
+          usuario: (req as any).user?.userId || 'Sistema',
+          tipo: 'observacion' as const
+        };
+        historialEntradas.push(entradaObservacion);
+      }
+    }
+
+    // Actualizar la aeronave con el nuevo estado y observaciones (si aplica)
+    updateData.$push = {
+      historialObservaciones: { $each: historialEntradas }
+    };
 
     const aeronaveActualizada = await Aeronave.findByIdAndUpdate(
       id,
-      { 
-        estado,
-        $push: {
-          historialObservaciones: nuevaEntradaHistorial
-        }
-      },
+      updateData,
       { new: true, runValidators: true }
     );
 
@@ -973,9 +1003,36 @@ router.get('/:aeronaveId/historial-horas-vuelo', requireAuth, requirePermission(
       historial = historial.slice(0, limiteParsed);
     }
 
+    // Obtener los IDs únicos de usuarios para hacer el lookup
+    const usuarioIds = [...new Set(historial.map((entrada: any) => entrada.usuario))].filter(Boolean);
+    
+    // Obtener información de los usuarios
+    let usuariosMap: { [key: string]: any } = {};
+    if (usuarioIds.length > 0) {
+      const usuarios = await User.find({ clerkId: { $in: usuarioIds } })
+        .select('clerkId name email')
+        .lean();
+      
+      usuariosMap = usuarios.reduce((map: any, usuario: any) => {
+        map[usuario.clerkId] = {
+          name: usuario.name,
+          email: usuario.email
+        };
+        return map;
+      }, {});
+    }
+
+    // Enriquecer el historial con información del usuario
+    const historialEnriquecido = historial.map((entrada: any) => ({
+      ...entrada,
+      usuarioInfo: usuariosMap[entrada.usuario] || null,
+      // Mantener el campo usuario original para compatibilidad
+      usuarioNombre: usuariosMap[entrada.usuario]?.name || entrada.usuario || 'Usuario desconocido'
+    }));
+
     // Calcular estadísticas del historial
-    const totalIncrementos = historial.reduce((sum: number, entrada: any) => sum + Math.max(0, entrada.incremento), 0);
-    const promedioIncremento = historial.length > 0 ? totalIncrementos / historial.filter((e: any) => e.incremento > 0).length : 0;
+    const totalIncrementos = historialEnriquecido.reduce((sum: number, entrada: any) => sum + Math.max(0, entrada.incremento), 0);
+    const promedioIncremento = historialEnriquecido.length > 0 ? totalIncrementos / historialEnriquecido.filter((e: any) => e.incremento > 0).length : 0;
 
     res.json({
       success: true,
@@ -987,12 +1044,12 @@ router.get('/:aeronaveId/historial-horas-vuelo', requireAuth, requirePermission(
           tipo: aeronave.tipo,
           horasActuales: aeronave.horasVuelo
         },
-        historial: historial,
+        historial: historialEnriquecido,
         estadisticas: {
-          totalRegistros: historial.length,
+          totalRegistros: historialEnriquecido.length,
           totalHorasAcumuladas: totalIncrementos,
           promedioIncrementoPorVuelo: Math.round(promedioIncremento * 100) / 100,
-          ultimoIncremento: historial.length > 0 ? historial[0].incremento : 0
+          ultimoIncremento: historialEnriquecido.length > 0 ? historialEnriquecido[0].incremento : 0
         }
       },
       message: 'Historial de horas de vuelo obtenido exitosamente'
@@ -1042,6 +1099,31 @@ router.get('/:aeronaveId/historial-observaciones', requireAuth, requirePermissio
       historial = historial.slice(0, limiteParsed);
     }
 
+    // Obtener los IDs únicos de usuarios para hacer el lookup
+    const usuarioIds = [...new Set(historial.map((obs: any) => obs.usuario))].filter(Boolean);
+    
+    // Obtener información de los usuarios
+    const usuarios = await User.find({ clerkId: { $in: usuarioIds } })
+      .select('clerkId name email')
+      .lean();
+    
+    // Crear un mapa para búsqueda rápida
+    const usuariosMap = usuarios.reduce((map: any, usuario: any) => {
+      map[usuario.clerkId] = {
+        name: usuario.name,
+        email: usuario.email
+      };
+      return map;
+    }, {});
+
+    // Enriquecer el historial con información del usuario
+    const historialEnriquecido = historial.map((obs: any) => ({
+      ...obs,
+      usuarioInfo: usuariosMap[obs.usuario] || null,
+      // Mantener el campo usuario original para compatibilidad
+      usuarioNombre: usuariosMap[obs.usuario]?.name || obs.usuario || 'Usuario desconocido'
+    }));
+
     res.json({
       success: true,
       data: {
@@ -1051,14 +1133,118 @@ router.get('/:aeronaveId/historial-observaciones', requireAuth, requirePermissio
           modelo: aeronave.modelo,
           tipo: aeronave.tipo
         },
-        historial: historial,
-        total: historial.length
+        historial: historialEnriquecido,
+        total: historialEnriquecido.length
       },
       message: 'Historial de observaciones obtenido exitosamente'
     });
 
   } catch (error) {
     logger.error('Error al obtener historial de observaciones de aeronave:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error interno del servidor',
+      error: process.env.NODE_ENV === 'development' ? error : undefined
+    });
+  }
+});
+
+// GET /api/inventario/observaciones-recientes/batch - Obtener observaciones recientes para múltiples aeronaves
+router.get('/observaciones-recientes/batch', requireAuth, requirePermission('VIEW_INVENTORY'), async (req, res) => {
+  try {
+    const { aeronaveIds } = req.query;
+    
+    if (!aeronaveIds) {
+      return res.status(400).json({
+        success: false,
+        message: 'Los IDs de aeronaves son requeridos'
+      });
+    }
+
+    // Parsear los IDs (pueden venir como string separado por comas o array)
+    let idsArray: string[] = [];
+    if (typeof aeronaveIds === 'string') {
+      idsArray = aeronaveIds.split(',').map(id => id.trim()).filter(Boolean);
+    } else if (Array.isArray(aeronaveIds)) {
+      idsArray = (aeronaveIds as string[]).filter(Boolean);
+    }
+
+    if (idsArray.length === 0) {
+      return res.json({
+        success: true,
+        data: {},
+        message: 'No hay aeronaves para procesar'
+      });
+    }
+
+    // Obtener aeronaves con sus historiales
+    const aeronaves = await Aeronave.find({ 
+      _id: { $in: idsArray } 
+    })
+    .select('_id matricula historialObservaciones')
+    .lean();
+
+    // Procesar observaciones recientes para cada aeronave
+    const observacionesRecientes: { [key: string]: any } = {};
+    
+    aeronaves.forEach(aeronave => {
+      const historial = aeronave.historialObservaciones || [];
+      
+      // Filtrar solo observaciones (no cambios de estado ni actualizaciones de horas)
+      const soloObservaciones = historial.filter((obs: any) => obs.tipo === 'observacion');
+      
+      if (soloObservaciones.length > 0) {
+        // Ordenar por fecha descendente y tomar la más reciente
+        soloObservaciones.sort((a: any, b: any) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime());
+        observacionesRecientes[aeronave._id.toString()] = soloObservaciones[0];
+      } else {
+        observacionesRecientes[aeronave._id.toString()] = null;
+      }
+    });
+
+    // Obtener los IDs únicos de usuarios para hacer el lookup
+    const todasLasObservaciones = Object.values(observacionesRecientes).filter(Boolean) as any[];
+    const usuarioIds = [...new Set(todasLasObservaciones.map((obs: any) => obs.usuario))].filter(Boolean);
+    
+    // Obtener información de los usuarios si hay observaciones
+    let usuariosMap: { [key: string]: any } = {};
+    if (usuarioIds.length > 0) {
+      const usuarios = await User.find({ clerkId: { $in: usuarioIds } })
+        .select('clerkId name email')
+        .lean();
+      
+      usuariosMap = usuarios.reduce((map: any, usuario: any) => {
+        map[usuario.clerkId] = {
+          name: usuario.name,
+          email: usuario.email
+        };
+        return map;
+      }, {});
+    }
+
+    // Enriquecer observaciones con información del usuario
+    const observacionesEnriquecidas: { [key: string]: any } = {};
+    Object.keys(observacionesRecientes).forEach(aeronaveId => {
+      const obs = observacionesRecientes[aeronaveId];
+      if (obs) {
+        observacionesEnriquecidas[aeronaveId] = {
+          ...obs,
+          usuarioInfo: usuariosMap[obs.usuario] || null,
+          usuarioNombre: usuariosMap[obs.usuario]?.name || obs.usuario || 'Usuario desconocido'
+        };
+      } else {
+        observacionesEnriquecidas[aeronaveId] = null;
+      }
+    });
+
+    res.json({
+      success: true,
+      data: observacionesEnriquecidas,
+      message: `Observaciones recientes obtenidas para ${Object.keys(observacionesEnriquecidas).length} aeronaves`
+    });
+
+  } catch (error) {
+    logger.error('Error al obtener observaciones recientes en batch:', error);
     res.status(500).json({
       success: false,
       message: 'Error interno del servidor',

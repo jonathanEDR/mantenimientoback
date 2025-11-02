@@ -63,7 +63,7 @@ router.get('/stats', requireAuth, requirePermission('VIEW_USERS'), async (req, r
     const usuariosPorRol: Record<UserRole, number> = {
       [UserRole.ADMINISTRADOR]: 0,
       [UserRole.MECANICO]: 0,
-      [UserRole.COPILOTO]: 0,
+      [UserRole.PILOTO]: 0,
       [UserRole.ESPECIALISTA]: 0
     };
     
